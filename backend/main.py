@@ -67,7 +67,7 @@ async def lifespan(app: FastAPI):
     from backend.detection.scanner import ReconDetector, detect_network_interface
     from backend.detection.dns_honeypot import init_dns_honeypot
     from backend.alerting import slack as alerting_slack
-    import os
+    from backend.ai.anomaly_detector import anomaly_detector
     from backend.models import ScanEvent, AttackerAction
     from backend.api import routes
     from backend.ai import topology
@@ -98,6 +98,11 @@ async def lifespan(app: FastAPI):
         await neo4j_client.create_attacker(scan_event.source_ip)
 
     async def on_dns_query(query_info: dict):
+        src = query_info['source_ip']
+        # Skip loopback, Docker bridge and internal resolvers — same filter as scanner.py
+        if src.startswith('127.') or src.startswith('172.17.') or src in ('::1', '0.0.0.0'):
+            return
+
         # Every query is intelligence — push to dashboard
         await sio.emit('dns_query', query_info)
 
@@ -122,13 +127,16 @@ async def lifespan(app: FastAPI):
                 attacker_ip=query_info['source_ip'],
                 action_type='port_scan',
                 target_node_id='dns_layer',
-                detail=f'DNS lookup: {query_info["hostname"]} → {query_info["resolved_to"]}',
+                detail=f'DNS lookup: {query_info["hostname"]} -> {query_info["resolved_to"]}',
                 timestamp=query_info['timestamp'],
                 mitre_technique_id='T1018',
                 mitre_technique_name='Remote System Discovery'
             ))
 
     loop = asyncio.get_running_loop()
+
+    # Train IsolationForest in a thread pool so it doesn't block the event loop (~0.3s)
+    await loop.run_in_executor(None, anomaly_detector.train)
 
     interface = detect_network_interface()
     detector = ReconDetector(interface=interface, callback=on_recon_detected)
@@ -142,7 +150,6 @@ async def lifespan(app: FastAPI):
     # Shutdown
     detector.stop()
     dns_honeypot.stop()
-    from backend.deception import container_manager
     await container_manager.teardown_all()
     await neo4j_client.close()
 

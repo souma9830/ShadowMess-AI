@@ -58,9 +58,9 @@ async def send_slack_alert(message: str, severity: str = 'info', fields: dict = 
         async with httpx.AsyncClient() as client:
             response = await client.post(SLACK_WEBHOOK_URL, json=payload, timeout=3.0)
             response.raise_for_status()
-            print(f"📨 Slack alert sent: {message[:60]}")
+            print(f"[Slack] Alert sent: {message[:60]}")
     except Exception as e:
-        print(f"⚠️ Slack alert failed: {e}")
+        print(f"[Slack] Alert failed: {e}")
 
 async def alert_recon_detected(attacker_ip: str, scan_type: str) -> None:
     await send_slack_alert(

@@ -44,7 +44,7 @@ class Neo4jClient:
             result = await session.run("MATCH (n) RETURN count(n) AS c")
             record = await result.single()
             if record and record["c"] == 0:
-                print("🌱 Seeding Neo4j demo data...")
+                print("[Seed] Seeding Neo4j demo data...")
                 await session.run("""
                     MERGE (a:Attacker {ip: '192.168.1.100'})
                     ON CREATE SET a.first_seen = datetime(), a.action_count = 1
@@ -67,12 +67,12 @@ class Neo4jClient:
                 if healthy:
                     await self.seed_demo_data()
                 _neo4j_available = healthy
-                print(f"✅ Neo4j connected (attempt {attempt+1})")
+                print(f"[OK] Neo4j connected (attempt {attempt+1})")
                 return True
             except Exception as e:
-                print(f"⏳ Neo4j not ready ({attempt+1}/{max_attempts}): {e}")
+                print(f"[WAIT] Neo4j not ready ({attempt+1}/{max_attempts}): {e}")
                 await asyncio.sleep(delay)
-        print("\u274c Neo4j unavailable — memory-only mode")
+        print("[ERROR] Neo4j unavailable -- memory-only mode")
         _neo4j_available = False
         return False
 
@@ -98,7 +98,7 @@ class Neo4jClient:
                     mitre_id: $mitre_id,
                     mitre_name: $mitre_name
                 }]->(n)
-            """, 
+            """,
             attacker_ip=action.attacker_ip,
             target_node_id=action.target_node_id,
             action_type=action.action_type,

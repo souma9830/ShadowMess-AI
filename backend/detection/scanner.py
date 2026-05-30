@@ -118,7 +118,7 @@ class ReconDetector:
             daemon=True
         )
         thread.start()
-        print(f'🔍 Scapy detector listening on {self.interface}')
+        print(f'[Scapy] Detector listening on {self.interface}')
 
     def stop(self):
         self._running = False

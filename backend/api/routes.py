@@ -6,11 +6,12 @@ from backend.database.neo4j_client import neo4j_client
 from backend.events import EVENTS
 from backend.ai.profiler import profile_attacker
 from backend.ai.topology import generate_topology
-from backend.ai.mutator import trigger_mutation
+from backend.ai.mutator import trigger_mutation, detect_fingerprinting
 from backend.ai.lure_generator import maybe_spawn_lure
 from backend.mitre.mapper import mitre_mapper
 from backend.alerting import slack
 from backend.deception.container_manager import spawn_topology
+from backend.ai.anomaly_detector import anomaly_detector
 
 router = APIRouter()
 
@@ -144,10 +145,25 @@ async def attacker_action(action: AttackerAction):
                 'tactic': mitre_tag['tactic'],
             })
 
-    # 2. Log to Neo4j
+    # 2. ML anomaly scoring — runs against pre-training benign baseline
+    score_result = anomaly_detector.score(action, attacker_actions[action.attacker_ip])
+    if sio:
+        await sio.emit('threat_score', {
+            'attacker_ip': action.attacker_ip,
+            'threat_score': score_result['threat_score'],
+            'is_anomalous': score_result['is_anomalous'],
+            'action_id': str(action.timestamp)
+        })
+        if score_result['is_anomalous'] and score_result['threat_score'] > 0.75:
+            await sio.emit(EVENTS['ALERT'], {
+                'message': f'High-anomaly action detected (score: {score_result["threat_score"]:.2f}) — possible APT behavior',
+                'severity': 'critical'
+            })
+
+    # 3. Log to Neo4j
     await neo4j_client.log_action(action)
 
-    # 3. Append to in-memory list inside lock
+    # 4. Append to in-memory list inside lock
     async with state_lock:
         attacker_actions[action.attacker_ip].append(action)
         _event_sequence += 1
@@ -158,8 +174,7 @@ async def attacker_action(action: AttackerAction):
         payload['sequence'] = sequence
         await sio.emit(EVENTS['ATTACKER_ACTION'], payload)
 
-    # 4. Check for fingerprinting and trigger mutation if detected
-    from backend.ai.mutator import detect_fingerprinting
+    # 5. Check for fingerprinting and trigger mutation if detected
     if detect_fingerprinting(action):
         new_topology = await trigger_mutation(sio, current_topology)
         await spawn_topology(new_topology, sio)
@@ -169,7 +184,7 @@ async def attacker_action(action: AttackerAction):
         asyncio.create_task(slack.alert_topology_mutated(new_topology.generation))
         return {"status": "mutated"}
 
-    # 5. Run profiling + lure pipeline in background (rate-limited)
+    # 6. Run profiling + lure pipeline in background (rate-limited)
     asyncio.create_task(_run_profiling_pipeline(action))
 
     return {"status": "logged"}

@@ -26,6 +26,78 @@ function App() {
     return () => clearInterval(interval);
   }, [isDeceptionActive]);
 
+  // Hydrate state from backend on page load — restores graph, sessions,
+  // profiles and DNS log after a browser refresh (backend still running).
+  useEffect(() => {
+    const hydrate = async () => {
+      // 1. Restore topology
+      let hasTopology = false;
+      try {
+        const res = await fetch('/api/topology/current');
+        if (res.ok) {
+          const topo = await res.json();
+          if (topo.nodes?.length > 0) {
+            useShadowStore.getState().updateTopology(topo.nodes, topo.edges, topo.generation);
+            hasTopology = true;
+          }
+        }
+      } catch {}
+
+      // 2. Restore attacker sessions
+      let sessions = [];
+      try {
+        const res = await fetch('/api/attackers');
+        if (res.ok) {
+          sessions = await res.json();
+          for (const s of sessions) {
+            useShadowStore.getState().updateSession(s.ip, s);
+          }
+          // Only mark deception active if there's also a topology to show
+          if (sessions.length > 0 && hasTopology) {
+            const latest = [...sessions].sort(
+              (a, b) => (b.last_seen || 0) - (a.last_seen || 0)
+            )[0];
+            useShadowStore.getState().activateDeception(latest.ip);
+            useShadowStore.getState().setFocusedAttacker(latest.ip);
+          }
+        }
+      } catch {}
+
+      // 3. Restore profiles — fetch all in parallel then set in one call
+      if (sessions.length > 0) {
+        const entries = await Promise.all(
+          sessions.map(async (s) => {
+            try {
+              const res = await fetch(`/api/attacker/profile/${s.ip}`);
+              if (res.ok) {
+                const profile = await res.json();
+                return [s.ip, profile];
+              }
+            } catch {}
+            return null;
+          })
+        );
+        const profiles = Object.fromEntries(entries.filter(Boolean));
+        if (Object.keys(profiles).length > 0) {
+          useShadowStore.getState().setAttackerProfiles(profiles);
+        }
+      }
+
+      // 4. Restore DNS query log (oldest-first from API → addDnsQuery prepends → newest at top)
+      try {
+        const res = await fetch('/api/dns/queries');
+        if (res.ok) {
+          const queries = await res.json();
+          for (const q of queries.slice(-10)) {
+            useShadowStore.getState().addDnsQuery(q);
+          }
+        }
+      } catch {}
+    };
+
+    hydrate();
+  }, []); // runs once on mount
+
   return (
     <div className="flex flex-col h-screen overflow-hidden text-white bg-[#0d0d0d]">
       {/* Top Nav */}

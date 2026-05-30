@@ -94,7 +94,7 @@ class DNSHoneypot:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 sock.bind(('0.0.0.0', 53))
                 sock.settimeout(1.0)
-                print('🌐 DNS honeypot listening on UDP :53')
+                print('[DNS] Honeypot listening on UDP :53')
                 while self._running:
                     try:
                         data, addr = sock.recvfrom(512)
