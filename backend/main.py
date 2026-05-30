@@ -68,25 +68,10 @@ async def handle_trigger_mutate(sid):
 async def lifespan(app: FastAPI):
     # Startup
     # Startup (Phase 4 Neo4j resilient init)
-    try:
-        await neo4j_client.init_schema()
-    except Exception as e:
-        logger.warning(f"Neo4j init_schema failed: {e}")
-
-    try:
-        healthy = await neo4j_client.health_check()
-    except Exception as e:
-        logger.warning(f"Neo4j health check failed: {e}")
-        healthy = False
-
-    if healthy:
-        try:
-            await neo4j_client.seed_demo_data()
-        except Exception as e:
-            logger.warning(f"Neo4j seed_demo_data failed: {e}")
-        logger.info("Neo4j connected")
-    else:
-        logger.error("Neo4j connection failed")
+    await neo4j_client.connect_with_retry()
+    
+    from backend.api.routes import load_state_from_redis
+    await load_state_from_redis()
 
     # Startup (Phase 3 Scanner, DNS Honeypot, Anomaly Detector)
     from backend.detection.scanner import ReconDetector, detect_network_interface
@@ -162,6 +147,9 @@ async def lifespan(app: FastAPI):
 
     # Train IsolationForest in a thread pool so it doesn't block the event loop (~0.3s)
     await loop.run_in_executor(None, anomaly_detector.train)
+    
+    # Pre-demo cleanup: teardown any dangling honeypot containers before taking traffic
+    await container_manager.teardown_all()
 
     interface = detect_network_interface()
     detector = ReconDetector(interface=interface, callback=on_recon_detected)
@@ -176,6 +164,9 @@ async def lifespan(app: FastAPI):
     dns_honeypot.stop()
     await container_manager.teardown_all()
     await neo4j_client.close()
+    
+    from backend.database.redis_client import redis_client
+    await redis_client.close()
 
 app = FastAPI(title='ShadowMesh API', lifespan=lifespan)
 

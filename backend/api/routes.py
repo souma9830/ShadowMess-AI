@@ -16,6 +16,7 @@ from backend.deception.container_manager import spawn_topology
 from backend.ai.anomaly_detector import anomaly_detector
 from backend.deception.credentials import cred_manager
 from backend.deception.canary import canary_manager
+from backend.database.redis_client import redis_client
 
 router = APIRouter()
 
@@ -34,11 +35,31 @@ def set_sio(sio_instance):
     global sio
     sio = sio_instance
 
+async def load_state_from_redis():
+    global attacker_actions, attacker_profiles, current_topology, _event_sequence, _deception_activated
+    
+    actions_map, profiles_map, topology = await redis_client.load_all_state()
+    
+    async with state_lock:
+        if topology:
+            current_topology = topology
+            _event_sequence = topology.generation * 1000
+            if topology.nodes:
+                _deception_activated = True
+            
+        attacker_profiles.update(profiles_map)
+        for ip, actions in actions_map.items():
+            # Extend in case some actions were added before load, though usually this runs on boot
+            attacker_actions[ip].extend(actions)
+            
+    print(f"[*] Redis state hydrated: {len(attacker_profiles)} profiles, {len(actions_map)} sessions.")
+
 async def set_topology(new_topology: TopologySnapshot):
     global current_topology, _event_sequence
     async with state_lock:
         current_topology = new_topology
         _event_sequence += 1
+    await redis_client.save_topology(new_topology)
 
 @router.post("/detect/scan")
 async def detect_scan(scan: ScanEvent):
@@ -58,6 +79,7 @@ async def detect_scan(scan: ScanEvent):
             async with state_lock:
                 current_topology = new_topo
                 _event_sequence += 1
+            await redis_client.save_topology(new_topo)
         except Exception as e:
             # Reset flag so the next scan event can retry topology generation
             async with state_lock:
@@ -92,6 +114,7 @@ async def _run_profiling_pipeline(action: AttackerAction, actions_for_ip: list):
     try:
         profile = await profile_attacker(ip, actions_for_ip)
         attacker_profiles[ip] = profile
+        await redis_client.save_profile(ip, profile)
         if sio:
             payload = profile.model_dump()
             payload['attacker_ip'] = ip  # ensure field present for frontend
@@ -123,6 +146,9 @@ async def _run_profiling_pipeline(action: AttackerAction, actions_for_ip: list):
                 _event_sequence += 1
                 payload = current_topology.model_dump()
                 payload['sequence'] = _event_sequence
+                topo_to_save = current_topology.model_copy(deep=True)
+            
+            await redis_client.save_topology(topo_to_save)
                 
             if sio:
                 await sio.emit(EVENTS['TOPOLOGY_UPDATE'], payload)
@@ -172,6 +198,8 @@ async def attacker_action(action: AttackerAction):
         _event_sequence += 1
         sequence = _event_sequence
         actions_snapshot = list(attacker_actions[action.attacker_ip])
+        
+    await redis_client.save_action(action.attacker_ip, action)
 
     if sio:
         payload = action.model_dump()
@@ -185,6 +213,7 @@ async def attacker_action(action: AttackerAction):
         async with state_lock:
             current_topology = new_topology
             _event_sequence += 1
+        await redis_client.save_topology(new_topology)
         asyncio.create_task(slack.alert_topology_mutated(new_topology.generation))
         return {"status": "mutated"}
 
@@ -341,6 +370,7 @@ async def _do_mutate():
     await spawn_topology(new_topology, sio)
     async with state_lock:
         current_topology = new_topology
+    await redis_client.save_topology(new_topology)
     # Slack alert for topology mutation
     asyncio.create_task(slack.alert_topology_mutated(new_topology.generation))
 
