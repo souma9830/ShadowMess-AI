@@ -8,12 +8,14 @@ import DemoControlBar from './components/DemoControlBar';
 import ErrorBoundary from './components/ErrorBoundary';
 import AttackerList from './components/AttackerList';
 import AttackerProfile from './components/AttackerProfile';
+import DnsIntelligence from './components/DnsIntelligence';
+import MitreHeatmap from './components/MitreHeatmap';
 import { motion, AnimatePresence } from 'framer-motion';
-// import MitreHeatmap from './components/MitreHeatmap';
 
 function App() {
   const { isConnected } = useSocketEvents();
   const isDeceptionActive = useShadowStore(state => state.isDeceptionActive);
+  const activeBreadcrumbs = useShadowStore(state => state.activeBreadcrumbs);
 
   return (
     <div className="flex flex-col h-screen overflow-hidden text-white bg-[#0d0d0d]">
@@ -26,9 +28,19 @@ function App() {
         <div className="text-white text-lg font-bold tracking-wide">
           <span className="text-shadowRed">Shadow</span>Mesh
         </div>
-        <div className="flex items-center gap-2">
-          <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-shadowGreen' : 'bg-shadowRed'}`}></div>
-          <span className="text-gray-400 text-sm">{isConnected ? 'System Online' : 'Disconnected'}</span>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-shadowGreen' : 'bg-shadowRed'}`}></div>
+            <span className="text-gray-400 text-sm">{isConnected ? 'System Online' : 'Disconnected'}</span>
+          </div>
+          {activeBreadcrumbs > 0 && (
+            <div className="flex items-center gap-1.5 px-2 py-0.5 bg-shadowGreen/20 border border-shadowGreen/40 rounded-full">
+              <span className="w-1.5 h-1.5 bg-shadowGreen rounded-full animate-pulse"></span>
+              <span className="text-[10px] text-shadowGreen font-bold uppercase tracking-wide">
+                Agents: {activeBreadcrumbs} Active
+              </span>
+            </div>
+          )}
         </div>
         <div className="text-sm font-mono h-8 flex items-center min-w-[320px] justify-end">
           <AnimatePresence mode="wait">
@@ -101,13 +113,21 @@ function App() {
         </section>
         
         {/* Right Sidebar */}
-        <aside className="w-80 flex flex-col bg-[#0d0d0d]">
-          <div className="flex-1 border-b border-[#2a2a2a] p-4 overflow-hidden">
-            <AlertFeed />
+        <aside className="w-80 flex flex-col bg-[#0d0d0d] border-l border-[#2a2a2a] z-10">
+          <div className="flex-1 overflow-hidden">
+            <ErrorBoundary componentName="AlertFeed">
+              <AlertFeed />
+            </ErrorBoundary>
           </div>
-          <div className="h-64 p-4 text-gray-500 text-sm border-t border-[#2a2a2a] flex items-center justify-center bg-[#161616]">
-            {/* <MitreHeatmap /> */}
-            MitreHeatmap Placeholder
+          <div className="h-64 shrink-0 overflow-hidden">
+            <ErrorBoundary componentName="DnsIntelligence">
+              <DnsIntelligence />
+            </ErrorBoundary>
+          </div>
+          <div className="h-64 shrink-0 overflow-hidden">
+            <ErrorBoundary componentName="MitreHeatmap">
+              <MitreHeatmap />
+            </ErrorBoundary>
           </div>
         </aside>
       </main>
