@@ -1,18 +1,17 @@
 #!/bin/bash
 set -e
 
-echo "[*] ShadowMesh Pre-Demo Checklist: Building and Pulling Images"
+echo "[*] Building ShadowMesh honeypot images..."
 
-# Base images used by topology generator
-echo "[1/2] Pulling base deception images..."
-docker pull ubuntu:20.04
-docker pull ubuntu:22.04
-docker pull centos:7
-docker pull nginx:1.18.0
-docker pull mysql:8.0.28
-docker pull httpd:2.4
+docker build -t shadowmesh-fake-ssh   ./docker/fake-ssh   || exit 1
+docker build -t shadowmesh-fake-http  ./docker/fake-http  || exit 1
+docker build -t shadowmesh-fake-db    ./docker/fake-db    || exit 1
+docker build -t shadowmesh-fake-api   ./docker/fake-api   || exit 1
+docker build -t shadowmesh-fake-auth  ./docker/fake-auth  || exit 1
 
-echo "[2/2] Rebuilding backend and orchestrator images (if needed)..."
-docker-compose build
-
-echo "[+] Pre-demo image setup complete. You are ready to run."
+echo "[+] All 5 honeypot images built successfully."
+echo "    shadowmesh-fake-ssh"
+echo "    shadowmesh-fake-http"
+echo "    shadowmesh-fake-db"
+echo "    shadowmesh-fake-api"
+echo "    shadowmesh-fake-auth"

@@ -29,22 +29,6 @@ services:
       timeout: 5s
       retries: 5
 
-  orchestrator:
-    build: ./orchestrator
-    ports:
-      - "9000:9000"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      DECEPTION_NETWORK: shadowmesh_deception_net
-    networks:
-      - deception_net
-    healthcheck:
-      test: wget -q --spider http://localhost:9000/health || exit 1
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   backend:
     build:
       context: .
@@ -53,7 +37,7 @@ services:
       - "8000:8000"
     env_file: .env
     environment:
-      # Honeypot containers on deception_net reach the host-networked backend via the Docker bridge gateway.
+      # Honeypot containers on deception_net reach the backend via the Docker bridge gateway.
       # On Linux: 172.17.0.1. On Docker Desktop (Win/Mac): host.docker.internal resolves automatically.
       HONEYPOT_CALLBACK_URL: "http://172.17.0.1:8000"
     depends_on:
@@ -61,20 +45,24 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      orchestrator:
-        condition: service_healthy
     # network_mode: host required for Scapy (NET_RAW/NET_ADMIN).
     # Backend reaches Neo4j/Redis via localhost since those ports are bound to host.
-    # Backend reaches orchestrator via host-mapped port 9000.
     network_mode: host
     cap_add:
       - NET_RAW
       - NET_ADMIN
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 
   frontend:
     build: ./frontend
     ports:
       - "5173:5173"
+    environment:
+      # Tells vite.config.js to proxy to the host-networked backend instead of localhost
+      VITE_BACKEND_HOST: "host.docker.internal"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Linux support (Docker Engine 20.10+)
     depends_on:
       - backend
 

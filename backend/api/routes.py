@@ -269,8 +269,13 @@ async def get_attack_path(attacker_ip: str):
 
 @router.get("/creds/{node_id}/{cred_id}")
 async def download_credential(node_id: str, cred_id: str, request: Request):
+    # Try by UUID first, then fall back to cred_type string
+    # (honeypot containers embed /api/creds/{node_id}/{cred_type} in their responses)
     cred = cred_manager.get_credential(cred_id)
     if not cred or cred.node_id != node_id:
+        creds_for_node = cred_manager.get_all_for_node(node_id)
+        cred = next((c for c in creds_for_node if c.cred_type == cred_id), None)
+    if not cred:
         raise HTTPException(status_code=404, detail="Credential not found")
         
     cred_manager.mark_accessed(cred_id)

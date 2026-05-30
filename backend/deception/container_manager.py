@@ -117,7 +117,7 @@ async def spawn_container(node: NetworkNode, canary_url: str = "") -> Optional[s
     container_name = f"sm_{node.node_id}"
 
     try:
-        container = await asyncio.get_event_loop().run_in_executor(
+        container = await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: _docker_client.containers.run(
                 image=image,
@@ -188,11 +188,11 @@ async def teardown_all() -> None:
         canary_manager.clear_for_node(node_id)
         try:
             if _docker_available and _docker_client is not None:
-                container = await asyncio.get_event_loop().run_in_executor(
+                container = await asyncio.get_running_loop().run_in_executor(
                     None,
                     lambda cid=cid: _docker_client.containers.get(cid),
                 )
-                await asyncio.get_event_loop().run_in_executor(
+                await asyncio.get_running_loop().run_in_executor(
                     None,
                     lambda c=container: c.stop(timeout=2),
                 )

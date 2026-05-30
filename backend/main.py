@@ -1,7 +1,6 @@
 import socketio
 import asyncio
 import time
-import logging
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from backend.database.neo4j_client import neo4j_client
@@ -9,10 +8,6 @@ from backend.api.routes import router as api_router, set_sio
 from backend.events import EVENTS
 from backend.mitre.mapper import mitre_mapper
 from backend.deception.container_manager import active_containers
-
-# Configure logger
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("backend")
 
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
 set_sio(sio)

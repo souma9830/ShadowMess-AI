@@ -4,6 +4,7 @@ from typing import Dict, List, Tuple
 from backend.models import AttackerAction, AttackerProfile, TopologySnapshot
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+TTL_SESSION = 86400  # 24 hours
 
 # Global Redis connection pool
 redis_conn = redis.from_url(REDIS_URL, decode_responses=True)
@@ -11,20 +12,30 @@ redis_conn = redis.from_url(REDIS_URL, decode_responses=True)
 class RedisClient:
     async def save_action(self, ip: str, action: AttackerAction):
         try:
-            await redis_conn.rpush(f"session:actions:{ip}", action.model_dump_json())
-            await redis_conn.ltrim(f"session:actions:{ip}", -1000, -1)
+            key = f"session:actions:{ip}"
+            await redis_conn.rpush(key, action.model_dump_json())
+            await redis_conn.ltrim(key, -1000, -1)
+            await redis_conn.expire(key, TTL_SESSION)
         except Exception as e:
             print(f"[Redis] Failed to save action for {ip}: {e}")
 
     async def save_profile(self, ip: str, profile: AttackerProfile):
         try:
-            await redis_conn.set(f"session:profile:{ip}", profile.model_dump_json())
+            await redis_conn.set(
+                f"session:profile:{ip}",
+                profile.model_dump_json(),
+                ex=TTL_SESSION
+            )
         except Exception as e:
             print(f"[Redis] Failed to save profile for {ip}: {e}")
 
     async def save_topology(self, topology: TopologySnapshot):
         try:
-            await redis_conn.set("system:topology", topology.model_dump_json())
+            await redis_conn.set(
+                "system:topology",
+                topology.model_dump_json(),
+                ex=TTL_SESSION
+            )
         except Exception as e:
             print(f"[Redis] Failed to save topology: {e}")
 
