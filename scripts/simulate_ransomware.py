@@ -7,7 +7,6 @@ def print_step(msg):
 
 def sleep_msg(seconds, msg):
     print(f"    ... {msg}")
-    time.sleep(seconds)
 
 def main():
     parser = argparse.ArgumentParser(description="Simulate a Ransomware/Data Exfiltration Campaign.")
