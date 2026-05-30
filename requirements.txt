@@ -18,3 +18,5 @@ numpy==1.26.4
 dnslib==0.9.24
 stix2==3.0.1
 fpdf2==2.7.9
+python-docx==1.1.2
+reportlab==4.2.2

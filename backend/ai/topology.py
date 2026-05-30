@@ -50,18 +50,22 @@ async def generate_topology(generation: int = 0) -> TopologySnapshot:
     # Guarantee unique IPs: cap node count to available pool size
     node_count = min(node_count, len(available_ips))
 
+    # First TIER1_COUNT nodes are Tier-1 (Docker); the rest are Tier-2 (projected).
+    # With node_count 9-14, this gives 3 full honeypots + up to 11 projected nodes.
+    TIER1_COUNT = 3
+
     nodes: List[NetworkNode] = []
     for i, graph_node in enumerate(G.nodes()):
         node_type = random.choices(node_types, weights=weights, k=1)[0]
         template = NODE_TEMPLATES[node_type]
-        
+
         # Clone ports to avoid mutation of shared static template lists
         ports = list(template['ports'])
-        
+
         # Introduce realistic anomalies (random extra administration or debugging ports)
         if random.random() < 0.3:
             ports.append(random.choice([22, 8080, 9000, 10050]))
-            
+
         banner_variation = template['banner']
         if random.random() < 0.25:
             if 'Apache' in banner_variation:
@@ -75,7 +79,8 @@ async def generate_topology(generation: int = 0) -> TopologySnapshot:
             banner=banner_variation,
             os=template['os'],
             is_fake=True,
-            container_id=None
+            container_id=None,
+            tier="tier1" if i < TIER1_COUNT else "tier2",
         ))
 
     edges = [(f'node_{generation}_{u}', f'node_{generation}_{v}') for u, v in G.edges()]
@@ -143,7 +148,8 @@ async def mutate_topology(current: TopologySnapshot) -> TopologySnapshot:
             banner=banner_variation,
             os=template['os'],
             is_fake=True,
-            container_id=None
+            container_id=None,
+            tier="tier2",  # New nodes in mutation are always projected (Tier-2)
         ))
         
     all_nodes = retained_nodes + new_nodes

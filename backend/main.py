@@ -156,11 +156,45 @@ async def lifespan(app: FastAPI):
 
     dns_honeypot = init_dns_honeypot(interface_ip=interface, callback=on_dns_query)
     dns_honeypot.start(loop)
+
+    # Task 11.3: Initialise ProjectionSensor for Tier-2 projected nodes
+    from backend.deception.projection_sensor import ProjectionSensor
+    import backend.deception.projection_sensor as _ps_module
+
+    sensor = ProjectionSensor(interface=interface, event_loop=loop)
+    _ps_module.projection_sensor = sensor
+    sensor.start()
+
+    async def _drain_projection_events():
+        """Forward ProjectionSensor events to Socket.IO."""
+        _event_map = {
+            "arp_hit":       EVENTS['PROJECTION_ARP_HIT'],
+            "port_scan":     EVENTS['PROJECTION_PORT_SCAN'],
+            "service_probe": EVENTS['PROJECTION_SERVICE_PROBE'],
+        }
+        while True:
+            event = await sensor.event_queue.get()
+            sio_event = _event_map.get(event.event_type, EVENTS['PROJECTION_PORT_SCAN'])
+            try:
+                await sio.emit(sio_event, {
+                    "source_ip":      event.source_ip,
+                    "target_ip":      event.target_ip,
+                    "target_node_id": event.target_node_id,
+                    "ports_hit":      event.ports_hit,
+                    "timestamp":      event.timestamp,
+                    "detail":         event.detail,
+                })
+            except Exception as exc:
+                print(f"[projection] Socket.IO emit failed: {exc}")
+
+    asyncio.create_task(_drain_projection_events())
+
     print("ShadowMesh backend online")
     yield
     # Shutdown
     detector.stop()
     dns_honeypot.stop()
+    sensor.stop()
     await container_manager.teardown_all()
     await neo4j_client.close()
     
