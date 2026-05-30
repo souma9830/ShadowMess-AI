@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir flask docker gunicorn
 COPY app.py .
 
 # Run as non-root
-RUN useradd -r -u 1001 orchestrator
+RUN useradd -r -m -u 1001 orchestrator
 USER orchestrator
 
 EXPOSE 9000

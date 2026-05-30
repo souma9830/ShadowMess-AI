@@ -27,29 +27,33 @@ export default function NetworkGraph() {
     return '#7F77DD'; // shadowPurple for 3+
   };
 
-  // Snapshot positions before nodes update
-  useEffect(() => {
-    if (graphRef.current) {
-      graphRef.current.graphData().nodes.forEach(n => {
+  const lastGraphData = useRef();
+
+  const graphData = React.useMemo(() => {
+    if (lastGraphData.current) {
+      lastGraphData.current.nodes.forEach(n => {
         prevPositions.current[n.id] = { x: n.x, y: n.y, vx: n.vx, vy: n.vy };
       });
     }
-  }, [nodes]);
-
-  const graphData = React.useMemo(() => ({
-    nodes: nodes.map(n => ({
-      id: n.node_id,
-      ip: n.ip,
-      nodeType: n.node_type,
-      ports: n.ports,
-      banner: n.banner,
-      os: n.os,
-      container_id: n.container_id,
-      // Restore previous x/y to prevent jarring jump on topology update
-      ...(prevPositions.current[n.node_id] || {})
-    })),
-    links: edges.map(([src, tgt]) => ({ source: src, target: tgt }))
-  }), [nodes, edges]);
+    
+    const newData = {
+      nodes: nodes.map(n => ({
+        id: n.node_id,
+        ip: n.ip,
+        nodeType: n.node_type,
+        ports: n.ports,
+        banner: n.banner,
+        os: n.os,
+        container_id: n.container_id,
+        // Restore previous x/y to prevent jarring jump on topology update
+        ...(prevPositions.current[n.node_id] || {})
+      })),
+      links: edges.map(([src, tgt]) => ({ source: src, target: tgt }))
+    };
+    
+    lastGraphData.current = newData;
+    return newData;
+  }, [nodes, edges]);
 
   const getNodeColor = (nodeType) => {
     switch(nodeType) {
@@ -66,7 +70,6 @@ export default function NetworkGraph() {
 
   useEffect(() => {
     if (graphRef.current) {
-      graphRef.current.d3AlphaDecay(isMutating ? 0.5 : 0.02);
       if (!isMutating) {
         prevPositions.current = {};
         graphRef.current.d3ReheatSimulation();
@@ -100,7 +103,7 @@ export default function NetworkGraph() {
           backgroundColor="#0d0d0d"
           linkColor={() => '#2a2a2a'}
           linkWidth={1}
-          d3AlphaDecay={0.02}
+          d3AlphaDecay={isMutating ? 0.5 : 0.02}
           cooldownTicks={150}
           nodePointerAreaPaint={(node, color, ctx) => {
             ctx.fillStyle = color;
