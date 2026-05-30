@@ -14,8 +14,8 @@ SEVERITY_EMOJI = {
 
 async def send_slack_alert(message: str, severity: str = 'info', fields: dict = None) -> None:
     if not SLACK_WEBHOOK_URL:
-        # Graceful no-op
-        print(f"[{severity.upper()}] Slack alert (not sent): {message}")
+        safe = message.encode("ascii", errors="replace").decode("ascii")
+        print(f"[{severity.upper()}] Slack alert (not sent): {safe}")
         return
 
     emoji = SEVERITY_EMOJI.get(severity, '🔔')

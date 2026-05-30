@@ -353,12 +353,19 @@ def api_root():
 
 @app.route("/api/users", methods=["GET"])
 def get_users():
-    return jsonify(FAKE_EMPLOYEES)
+    canary_url = os.environ.get("CANARY_WIKI_URL", "")
+    employees = [dict(e) for e in FAKE_EMPLOYEES]
+    if canary_url:
+        for emp in employees:
+            emp["internal_wiki_url"] = canary_url
+    return jsonify(employees)
 
 
 @app.route("/api/config", methods=["GET"])
 def get_config():
-    return jsonify(FAKE_CONFIG)
+    config = dict(FAKE_CONFIG)
+    config["backup_config_url"] = f"/api/creds/{NODE_ID}/env_file"
+    return jsonify(config)
 
 
 @app.route("/api/login", methods=["POST"])

@@ -1,5 +1,7 @@
 import asyncio
-from fastapi import APIRouter, HTTPException
+import time
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import PlainTextResponse, HTMLResponse
 from collections import defaultdict
 from backend.models import ScanEvent, AttackerAction, TopologySnapshot, AttackerProfile
 from backend.database.neo4j_client import neo4j_client
@@ -12,6 +14,8 @@ from backend.mitre.mapper import mitre_mapper
 from backend.alerting import slack
 from backend.deception.container_manager import spawn_topology
 from backend.ai.anomaly_detector import anomaly_detector
+from backend.deception.credentials import cred_manager
+from backend.deception.canary import canary_manager
 
 router = APIRouter()
 
@@ -71,7 +75,7 @@ async def detect_scan(scan: ScanEvent):
     return {"status": "deception_activated", "node_count": len(current_topology.nodes)}
 
 
-async def _run_profiling_pipeline(action: AttackerAction):
+async def _run_profiling_pipeline(action: AttackerAction, actions_for_ip: list):
     """
     Background task: runs attacker profiling and adaptive lure
     spawning — decoupled from the hot request path.
@@ -79,7 +83,6 @@ async def _run_profiling_pipeline(action: AttackerAction):
     global attacker_profiles, current_topology
 
     ip = action.attacker_ip
-    actions_for_ip = attacker_actions.get(ip, [])
 
     # Rate limit Groq profiling to every 3 actions per IP
     if len(actions_for_ip) % 3 != 0:
@@ -168,6 +171,7 @@ async def attacker_action(action: AttackerAction):
         attacker_actions[action.attacker_ip].append(action)
         _event_sequence += 1
         sequence = _event_sequence
+        actions_snapshot = list(attacker_actions[action.attacker_ip])
 
     if sio:
         payload = action.model_dump()
@@ -184,8 +188,8 @@ async def attacker_action(action: AttackerAction):
         asyncio.create_task(slack.alert_topology_mutated(new_topology.generation))
         return {"status": "mutated"}
 
-    # 6. Run profiling + lure pipeline in background (rate-limited)
-    asyncio.create_task(_run_profiling_pipeline(action))
+    # 6. Run MITRE + profiling + lure pipeline in background — never blocks response
+    asyncio.create_task(_run_profiling_pipeline(action, actions_snapshot))
 
     return {"status": "logged"}
 
@@ -233,6 +237,94 @@ async def get_attacker_actions(ip: str):
 async def get_attack_path(attacker_ip: str):
     path = await neo4j_client.get_attack_path(attacker_ip)
     return path
+
+@router.get("/creds/{node_id}/{cred_id}")
+async def download_credential(node_id: str, cred_id: str, request: Request):
+    cred = cred_manager.get_credential(cred_id)
+    if not cred or cred.node_id != node_id:
+        raise HTTPException(status_code=404, detail="Credential not found")
+        
+    cred_manager.mark_accessed(cred_id)
+    
+    attacker_ip = request.headers.get("X-Forwarded-For") or request.client.host
+    
+    # Log the theft
+    action = AttackerAction(
+        attacker_ip=attacker_ip,
+        action_type="credential_theft",
+        target_node_id=node_id,
+        detail=f"Stolen credential: {cred.filename}",
+        timestamp=time.time()
+    )
+    
+    # Process action through existing pipeline in background
+    asyncio.create_task(attacker_action(action))
+    
+    if sio:
+        try:
+            await sio.emit(EVENTS['CREDENTIAL_STOLEN'], {
+                "cred_id": cred.cred_id,
+                "filename": cred.filename,
+                "cred_type": cred.cred_type,
+                "attacker_ip": attacker_ip
+            })
+        except Exception:
+            pass
+            
+    try:
+        if hasattr(slack, 'alert_credential_stolen'):
+            asyncio.create_task(slack.alert_credential_stolen(
+                attacker_ip=attacker_ip,
+                filename=cred.filename,
+                cred_type=cred.cred_type
+            ))
+    except Exception:
+        pass
+        
+    return PlainTextResponse(
+        content=cred.content,
+        media_type="application/octet-stream"
+    )
+
+
+@router.get("/canary/{token_id}")
+async def trigger_canary(token_id: str, request: Request):
+    token = canary_manager.get_token(token_id)
+    if not token:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    attacker_ip = request.headers.get("X-Forwarded-For") or request.client.host
+    canary_manager.mark_triggered(token_id, attacker_ip)
+
+    if sio:
+        try:
+            await sio.emit(EVENTS['CANARY_TRIGGERED'], {
+                "token_id": token.token_id,
+                "label": token.label,
+                "node_id": token.node_id,
+                "triggered_by_ip": attacker_ip,
+            })
+        except Exception:
+            pass
+
+    action = AttackerAction(
+        attacker_ip=attacker_ip,
+        action_type="canary_trigger",
+        target_node_id=token.node_id,
+        detail=f"Canary accessed: {token.label}",
+        timestamp=time.time(),
+    )
+    asyncio.create_task(attacker_action(action))
+
+    try:
+        asyncio.create_task(slack.alert_canary_triggered(attacker_ip, token.label, token.node_id))
+    except Exception:
+        pass
+
+    return HTMLResponse(
+        content="<html><body>403 Forbidden — Access Denied</body></html>",
+        status_code=403,
+    )
 
 
 @router.get("/dns/queries")

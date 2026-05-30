@@ -31,30 +31,35 @@ class Neo4jClient:
             # so no node index is created here.
 
     async def health_check(self) -> bool:
+        global _neo4j_available
         try:
             async with self.driver.session() as session:
                 await session.run("RETURN 1 AS n")
+            _neo4j_available = True
             return True
         except Exception as e:
+            _neo4j_available = False
             return False
 
     async def seed_demo_data(self):
+        import time
+        current_epoch = time.time()
         async with self.driver.session() as session:
-            # Check if empty
-            result = await session.run("MATCH (n) RETURN count(n) AS c")
+            # Check current node count
+            result = await session.run("MATCH (n:Node) RETURN count(n) AS c")
             record = await result.single()
-            if record and record["c"] == 0:
-                print("[Seed] Seeding Neo4j demo data...")
-                await session.run("""
-                    MERGE (a:Attacker {ip: '192.168.1.100'})
-                    ON CREATE SET a.first_seen = datetime(), a.action_count = 1
-                    MERGE (n:Node {node_id: 'node_demo', node_type: 'web_server', ip: '172.20.0.12'})
-                    CREATE (a)-[:PERFORMED {
-                        action_type: 'port_scan',
-                        detail: 'nmap -sV scan detected',
-                        timestamp: datetime().epochMillis / 1000.0
-                    }]->(n)
-                """)
+            if record and record["c"] > 0:
+                return
+            
+            print("[Seed] Seeding Neo4j demo data...")
+            # Seed demo data, using MERGE to prevent duplicates
+            await session.run("""
+                MERGE (a:Attacker {ip: '192.168.1.100'})
+                MERGE (n:Node {node_id: 'node_demo'})
+                ON CREATE SET n.node_type = 'web_server'
+                MERGE (a)-[r:PERFORMED {action_type: 'port_scan'}]->(n)
+                ON CREATE SET r.timestamp = $timestamp
+            """, timestamp=current_epoch)
 
     async def connect_with_retry(self, max_attempts=10, delay=3.0) -> bool:
         global _neo4j_available
