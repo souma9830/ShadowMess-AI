@@ -189,6 +189,14 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(_drain_projection_events())
 
+    # Phase 12.2: Initialize cloud intelligence with Socket.IO and Slack
+    from backend.api.cloud_routes import init_cloud_intel
+    init_cloud_intel(
+        sio=sio,
+        slack_alert_fn=alerting_slack.send_slack_alert,
+        profile_store=routes.attacker_profiles,
+    )
+
     print("ShadowMesh backend online")
     yield
     # Shutdown
@@ -211,6 +219,10 @@ async def global_exception_handler(request, exc):
     return JSONResponse(status_code=500, content={"error": str(exc)})
 
 app.include_router(api_router, prefix="/api")
+
+# Phase 12.2: Register cloud deception routes
+from backend.api.cloud_routes import router as cloud_router, init_cloud_intel
+app.include_router(cloud_router, prefix="/api")
 
 socket_app = socketio.ASGIApp(sio, other_asgi_app=app)
 

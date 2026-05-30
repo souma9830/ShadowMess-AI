@@ -1,15 +1,14 @@
 """
-ShadowMesh — Task 4.2D: Fake LDAP / SSO Honeypot
-=================================================
+ShadowMesh — Fake LDAP / SSO Honeypot (Task 4.2D + Task 12.1C)
+===============================================================
 A Flask-based fake Auth honeypot server that:
   - Listens on port 389 inside the container (HTTP-based LDAP mock)
-  - Returns fake XML user lists for GET /ldap/search
-  - Fails consistently on POST /ldap/bind with LDAP code 49
+  - Returns realistic Active Directory data via FakeActiveDirectory engine
+  - Supports LDAP bind, search, user/group/computer enumeration
   - Provides fake SAML metadata on GET /sso/metadata
   - Simulates authentication latency (500ms) on POST /sso/login
   - Binds headers indicating Server: Microsoft-IIS/10.0 and X-Powered-By: ASP.NET
   - Posts callback action telemetry back to the ShadowMesh FastAPI backend
-  - Runs in isolation and maintains statelessness
 
 Environment variables:
   NODE_ID              — Injected by container manager (default: fake-auth-node)
@@ -17,11 +16,23 @@ Environment variables:
 """
 
 import os
+import sys
 import time
+import uuid
+import hashlib
 import logging
 import threading
+from datetime import datetime, timedelta, timezone
+
 import requests
-from flask import Flask, jsonify, request, Response, redirect
+from flask import Flask, jsonify, request, Response
+
+# Support importing fake_ad from multiple locations
+try:
+    from backend.deception.fake_ad import FakeActiveDirectory, LDAPSearchEngine
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from fake_ad import FakeActiveDirectory, LDAPSearchEngine
 
 # ---------------------------------------------------------------------------
 # Configuration & Setup
@@ -45,57 +56,54 @@ app = Flask(__name__)
 try:
     import werkzeug.serving
     _orig_send_header = werkzeug.serving.WSGIRequestHandler.send_header
-    
+
     def _patched_send_header(self, keyword, value):
-        # Skip Werkzeug's default/empty Server header to avoid duplication
         if keyword.lower() == 'server' and (not value or "Werkzeug" in value or value.strip() == ""):
             return
         _orig_send_header(self, keyword, value)
-        
+
     werkzeug.serving.WSGIRequestHandler.send_header = _patched_send_header
 except Exception:
     pass
 
 # ---------------------------------------------------------------------------
-# Fake Data Stores
+# Active Directory Engine (initialized at startup)
 # ---------------------------------------------------------------------------
-# We generate 20 realistic fake users with bcrypt-style hashes
-FAKE_USERS = [
-    {"cn": "john.smith", "department": "Finance", "group": "Domain Users", "hash": "$2b$12$R1qK...ZzF"},
-    {"cn": "alice.jones", "department": "Engineering", "group": "Domain Admins", "hash": "$2b$12$K9pL...MmB"},
-    {"cn": "bob.brown", "department": "HR", "group": "Domain Users", "hash": "$2b$12$A4vN...CxD"},
-    {"cn": "charlie.davis", "department": "Operations", "group": "Server Admins", "hash": "$2b$12$Y7rP...QgH"},
-    {"cn": "diana.prince", "department": "Security", "group": "Domain Admins", "hash": "$2b$12$L2wT...JhK"},
-    {"cn": "ethan.hunt", "department": "Executive", "group": "Enterprise Admins", "hash": "$2b$12$P5sX...BvN"},
-    {"cn": "fiona.glen", "department": "Marketing", "group": "Domain Users", "hash": "$2b$12$M8cQ...TwF"},
-    {"cn": "george.clark", "department": "Sales", "group": "Domain Users", "hash": "$2b$12$H3kR...ZpM"},
-    {"cn": "hannah.abbott", "department": "QA", "group": "Domain Users", "hash": "$2b$12$J6yL...NvC"},
-    {"cn": "ian.malcolm", "department": "Research", "group": "Domain Users", "hash": "$2b$12$W9bV...DxS"},
-    {"cn": "julia.roberts", "department": "Legal", "group": "Domain Users", "hash": "$2b$12$C2xN...FqL"},
-    {"cn": "kevin.bacon", "department": "PR", "group": "Domain Users", "hash": "$2b$12$V5mT...RhP"},
-    {"cn": "laura.dern", "department": "Engineering", "group": "Developers", "hash": "$2b$12$N8pK...BxJ"},
-    {"cn": "michael.scott", "department": "Management", "group": "Domain Users", "hash": "$2b$12$S3rF...MzG"},
-    {"cn": "nancy.drew", "department": "Investigation", "group": "Domain Users", "hash": "$2b$12$D6yH...LvQ"},
-    {"cn": "oscar.isaac", "department": "Design", "group": "Domain Users", "hash": "$2b$12$G9vC...NxT"},
-    {"cn": "peter.parker", "department": "IT", "group": "Helpdesk", "hash": "$2b$12$F4bM...PvR"},
-    {"cn": "quinn.fabray", "department": "HR", "group": "Domain Users", "hash": "$2b$12$X7kL...BzW"},
-    {"cn": "rachel.green", "department": "Procurement", "group": "Domain Users", "hash": "$2b$12$T2pN...JxC"},
-    {"cn": "sam.gamgee", "department": "Facilities", "group": "Domain Users", "hash": "$2b$12$L5mR...QvK"},
-]
+fake_ad = FakeActiveDirectory(domain_name="corp.internal")
+ldap_engine = LDAPSearchEngine(fake_ad)
 
-def generate_users_xml():
-    xml_parts = ['<?xml version="1.0" encoding="UTF-8"?>\n<users>']
-    for u in FAKE_USERS:
-        xml_parts.append(f"""
-  <user>
-    <cn>{u['cn']}</cn>
-    <department>{u['department']}</department>
-    <group>{u['group']}</group>
-    <hash>{u['hash']}</hash>
-  </user>""")
-    xml_parts.append("\n</users>")
-    return "".join(xml_parts)
+log.info("[AD] Generated %d users, %d computers, %d groups",
+         len(fake_ad.users), len(fake_ad.computers), len(fake_ad.groups))
 
+# ---------------------------------------------------------------------------
+# LDAP Response Enrichment
+# ---------------------------------------------------------------------------
+def _enrich_entry(entry: dict) -> dict:
+    """Add synthetic AD metadata fields to every LDAP response entry."""
+    dn = entry.get("dn", "")
+    attrs = entry.get("attributes", {})
+
+    guid_seed = hashlib.md5(dn.encode()).hexdigest()
+    object_guid = str(uuid.UUID(guid_seed))
+
+    base_dt = datetime(2021, 3, 15, 8, 30, 0, tzinfo=timezone.utc)
+    seed_val = int(hashlib.sha256(dn.encode()).hexdigest()[:8], 16)
+    when_created = base_dt + timedelta(days=seed_val % 1000)
+    when_changed = when_created + timedelta(days=(seed_val % 300) + 30)
+
+    attrs.setdefault("distinguishedName", dn)
+    attrs.setdefault("objectClass", entry.get("objectClass", "top"))
+    attrs["objectGUID"] = object_guid
+    attrs["whenCreated"] = when_created.strftime("%Y%m%d%H%M%S.0Z")
+    attrs["whenChanged"] = when_changed.strftime("%Y%m%d%H%M%S.0Z")
+
+    entry["attributes"] = attrs
+    return entry
+
+
+# ---------------------------------------------------------------------------
+# SAML Metadata (preserved from Task 4.2D)
+# ---------------------------------------------------------------------------
 SAML_METADATA_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <EntityDescriptor entityID="https://sso.corp.internal/metadata" xmlns="urn:oasis:names:tc:SAML:2.0:metadata">
   <Organization>
@@ -120,7 +128,6 @@ SAML_METADATA_XML = """<?xml version="1.0" encoding="UTF-8"?>
 # Background Callbacks Engine
 # ---------------------------------------------------------------------------
 def _fire_callback(attacker_ip: str, action_type: str, detail: str) -> None:
-    """POST request metrics back to FastAPI backend core."""
     payload = {
         "attacker_ip": attacker_ip,
         "action_type": action_type,
@@ -130,13 +137,12 @@ def _fire_callback(attacker_ip: str, action_type: str, detail: str) -> None:
     }
     try:
         resp = requests.post(CALLBACK_ENDPOINT, json=payload, timeout=5)
-        log.info("[callback] POST %s → %s (%s)", CALLBACK_ENDPOINT, resp.status_code, action_type)
+        log.info("[callback] POST %s -> %s (%s)", CALLBACK_ENDPOINT, resp.status_code, action_type)
     except Exception as exc:
         log.warning("[callback] Failed to reach backend: %s", exc)
 
 
 def _fire_callback_async(attacker_ip: str, action_type: str, detail: str) -> None:
-    """Spawn daemon thread to handle telemetry callback without blocking server responses."""
     t = threading.Thread(
         target=_fire_callback,
         args=(attacker_ip, action_type, detail),
@@ -145,41 +151,140 @@ def _fire_callback_async(attacker_ip: str, action_type: str, detail: str) -> Non
     t.start()
 
 # ---------------------------------------------------------------------------
-# Middleware: Add server banners and fire callback telemetry
+# Middleware: Add server banners
 # ---------------------------------------------------------------------------
 @app.after_request
 def modify_response(response: Response) -> Response:
-    # Set headers mandated by senior specs
     response.headers["Server"] = "Microsoft-IIS/10.0"
     response.headers["X-Powered-By"] = "ASP.NET"
-    
-    # Extract attacker details
-    attacker_ip = request.headers.get("X-Forwarded-For", request.remote_addr)
-    
-    # All routes in Task 4.2D use action_type = "login_attempt"
-    action_type = "login_attempt"
-    detail = f"LDAP/SSO access — {request.method} {request.path}"
-        
-    _fire_callback_async(attacker_ip, action_type, detail)
     return response
 
 # ---------------------------------------------------------------------------
-# Routes
+# AD Intelligence Detection (Task 12.1D)
 # ---------------------------------------------------------------------------
-@app.route("/ldap/search", methods=["GET"])
-def get_ldap_search():
-    return Response(generate_users_xml(), mimetype="application/xml")
+def _detect_high_value_query(attacker_ip: str, query: str) -> None:
+    """Detect high-value AD queries and fire enriched callbacks to backend."""
+    q = query.lower()
+    if "domain admins" in q or "domain admin" in q:
+        _fire_callback_async(
+            attacker_ip, "ad_enumeration",
+            f"Domain Admin enumeration detected: {query} | mitre=T1087.002"
+        )
+    elif "svc_" in q or "service account" in q:
+        _fire_callback_async(
+            attacker_ip, "ad_enumeration",
+            f"Service account discovery: {query} | mitre=T1087.002"
+        )
+    elif "password" in q and ("description" in q or "*" in q):
+        _fire_callback_async(
+            attacker_ip, "ad_enumeration",
+            f"Password exposure discovery: {query} | mitre=T1552"
+        )
 
 
+# ---------------------------------------------------------------------------
+# LDAP Routes (Task 12.1C)
+# ---------------------------------------------------------------------------
 @app.route("/ldap/bind", methods=["POST"])
 def post_ldap_bind():
-    # LDAP-style authentication failure
+    data = request.get_json(silent=True) or {}
+    username = data.get("username", "")
+    password = data.get("password", "")
+
+    attacker_ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+    log.info("[ldap-bind] user=%s from=%s", username, attacker_ip)
+    _fire_callback_async(attacker_ip, "ldap_bind", f"LDAP bind attempt: user={username}")
+
     return jsonify({
-        "result": "invalidCredentials",
-        "code": 49
-    }), 401
+        "resultCode": 0,
+        "message": "Bind successful",
+    })
 
 
+@app.route("/ldap/search", methods=["GET"])
+def get_ldap_search():
+    search_filter = request.args.get("filter", "(objectClass=user)")
+    attributes_param = request.args.get("attributes", None)
+    attributes = [a.strip() for a in attributes_param.split(",")] if attributes_param else None
+
+    attacker_ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+    log.info("[ldap-search] filter=%s attrs=%s from=%s", search_filter, attributes, attacker_ip)
+    _fire_callback_async(attacker_ip, "ldap_search", f"LDAP search: filter={search_filter}")
+
+    _detect_high_value_query(attacker_ip, search_filter)
+
+    results = ldap_engine.to_ldap_response(search_filter, attributes)
+
+    if not results:
+        return jsonify({
+            "resultCode": 32,
+            "message": "No such object",
+        })
+
+    enriched = [_enrich_entry(entry) for entry in results]
+    return jsonify({
+        "resultCode": 0,
+        "entries": enriched,
+    })
+
+
+@app.route("/ldap/users", methods=["GET"])
+def get_ldap_users():
+    page = request.args.get("page", 1, type=int)
+    size = request.args.get("size", 25, type=int)
+    page = max(1, page)
+    size = max(1, min(size, 100))
+
+    attacker_ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+    log.info("[ldap-users] page=%d size=%d from=%s", page, size, attacker_ip)
+    _fire_callback_async(attacker_ip, "ldap_enum", "LDAP user enumeration")
+
+    all_users = ldap_engine.search_users()
+    all_users = [_enrich_entry(e) for e in all_users]
+    total = len(all_users)
+    start = (page - 1) * size
+    end = start + size
+    page_users = all_users[start:end]
+
+    return jsonify({
+        "total": total,
+        "page": page,
+        "size": size,
+        "users": page_users,
+    })
+
+
+@app.route("/ldap/groups", methods=["GET"])
+def get_ldap_groups():
+    attacker_ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+    log.info("[ldap-groups] from=%s", attacker_ip)
+    _fire_callback_async(attacker_ip, "ldap_enum", "LDAP group enumeration")
+
+    groups = ldap_engine.search_groups()
+    enriched = [_enrich_entry(e) for e in groups]
+    return jsonify({
+        "resultCode": 0,
+        "entries": enriched,
+    })
+
+
+@app.route("/ldap/computers", methods=["GET"])
+def get_ldap_computers():
+    attacker_ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+    log.info("[ldap-computers] from=%s", attacker_ip)
+    _fire_callback_async(attacker_ip, "ldap_enum", "LDAP computer enumeration")
+
+    computers = ldap_engine.search_computers()
+    enriched = [_enrich_entry(e) for e in computers]
+    return jsonify({
+        "resultCode": 0,
+        "entries": enriched,
+    })
+
+
+# ---------------------------------------------------------------------------
+# SSO Routes (preserved from Task 4.2D)
+# ---------------------------------------------------------------------------
 @app.route("/sso/metadata", methods=["GET"])
 def get_sso_metadata():
     return Response(SAML_METADATA_XML, mimetype="application/xml")
@@ -187,10 +292,7 @@ def get_sso_metadata():
 
 @app.route("/sso/login", methods=["POST"])
 def post_sso_login():
-    # Mandated 500ms delay
     time.sleep(0.5)
-    
-    # Always fail
     return Response("Login Failure: Invalid Token or Credentials", status=401, mimetype="text/plain")
 
 

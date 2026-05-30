@@ -23,6 +23,10 @@ EVENTS = {
     'LURE_SPAWNED':       'lure_spawned',          # Adaptive lure: new targeted fake service spun up
     'THREAT_SCORE':       'threat_score',          # ML anomaly score for attacker action
     'DNS_QUERY':          'dns_query',             # DNS query logged by honeypot
+    'AD_ENUMERATION':     'ad_enumeration',        # AD enumeration detected (Task 12.1D)
+    'CLOUD_CREDENTIAL_USED': 'cloud_credential_used', # Cloud credential used by attacker (Task 12.2)
+    'CLOUD_ACCOUNT_DISCOVERY': 'cloud_account_discovery', # Cloud account enumeration (Task 12.2)
+    'CLOUD_API_ACCESS':   'cloud_api_access',      # Generic cloud API access (Task 12.2)
 
     # Projection Sensor events (Tier-2 projected nodes — Task 11.3)
     'PROJECTION_ARP_HIT':      'projection_arp_hit',      # ARP probe hit a projected IP
