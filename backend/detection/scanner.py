@@ -126,11 +126,24 @@ class ReconDetector:
         except Exception:
             pass
 
-        thread = threading.Thread(
-            target=lambda: sniff(iface=self.interface, prn=self._packet_handler,
-                                 store=False, stop_filter=lambda _: not self._running),
-            daemon=True
-        )
+        def _run_sniff():
+            try:
+                sniff(iface=self.interface, prn=self._packet_handler,
+                      store=False, stop_filter=lambda _: not self._running)
+            except RuntimeError as e:
+                print(f"[Scanner] Scapy sniff failed: {e}")
+                print("[Scanner] If on Windows, install Npcap/WinPcap to enable sniffing. Scanner disabled.")
+                self._running = False
+                if sio and self._loop and self._loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        sio.emit('alert', {
+                            'message': 'Network detection disabled: Npcap/WinPcap missing on Windows.',
+                            'severity': 'warning'
+                        }),
+                        self._loop
+                    )
+
+        thread = threading.Thread(target=_run_sniff, daemon=True)
         thread.start()
         print(f'[Scapy] Detector listening on {self.interface}')
 

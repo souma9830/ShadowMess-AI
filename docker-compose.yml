@@ -40,6 +40,7 @@ services:
     volumes:
       # Docker socket is ONLY mounted here, not in the backend
       - /var/run/docker.sock:/var/run/docker.sock
+    user: root
     environment:
       DECEPTION_NETWORK: shadowmesh_deception_net
     networks:
