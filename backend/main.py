@@ -37,8 +37,11 @@ async def handle_trigger_scan(sid):
 @sio.on(EVENTS['TRIGGER_LOGIN'])
 async def handle_trigger_login(sid):
     from backend.models import AttackerAction
-    from backend.api.routes import attacker_action, current_topology
-    node_id = current_topology.nodes[0].node_id if current_topology.nodes else 'node_demo'
+    import backend.api.routes as routes_module
+    # Read current_topology from the module at call time (not import time)
+    # so we always get the live topology, not the initial empty snapshot
+    topo = routes_module.current_topology
+    node_id = topo.nodes[0].node_id if topo.nodes else 'node_demo'
     action = AttackerAction(
         attacker_ip='192.168.1.100',
         action_type='login_attempt',
@@ -46,12 +49,12 @@ async def handle_trigger_login(sid):
         target_node_id=node_id,
         timestamp=0.0
     )
-    await attacker_action(action)
+    await routes_module.attacker_action(action)
 
 @sio.on(EVENTS['TRIGGER_MUTATE'])
 async def handle_trigger_mutate(sid):
-    from backend.api.routes import mutate_topology
-    await mutate_topology()
+    import backend.api.routes as routes_module
+    await routes_module.mutate_topology()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
