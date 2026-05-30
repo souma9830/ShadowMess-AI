@@ -109,7 +109,7 @@ async def lifespan(app: FastAPI):
             return
 
         # Every query is intelligence — push to dashboard
-        await sio.emit('dns_query', query_info)
+        await sio.emit(EVENTS['DNS_QUERY'], query_info)
 
         if query_info['is_planted']:
             # High-value canary: attacker revealed their target

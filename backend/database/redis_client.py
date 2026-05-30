@@ -1,6 +1,6 @@
 import os
 import redis.asyncio as redis
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from backend.models import AttackerAction, AttackerProfile, TopologySnapshot
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
@@ -39,7 +39,7 @@ class RedisClient:
         except Exception as e:
             print(f"[Redis] Failed to save topology: {e}")
 
-    async def load_all_state(self) -> Tuple[Dict[str, List[AttackerAction]], Dict[str, AttackerProfile], TopologySnapshot]:
+    async def load_all_state(self) -> Tuple[Dict[str, List[AttackerAction]], Dict[str, AttackerProfile], Optional[TopologySnapshot]]:
         actions_map = {}
         profiles_map = {}
         topology = None

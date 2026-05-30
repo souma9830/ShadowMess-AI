@@ -177,7 +177,7 @@ async def attacker_action(action: AttackerAction):
     # 2. ML anomaly scoring — runs against pre-training benign baseline
     score_result = anomaly_detector.score(action, attacker_actions[action.attacker_ip])
     if sio:
-        await sio.emit('threat_score', {
+        await sio.emit(EVENTS['THREAT_SCORE'], {
             'attacker_ip': action.attacker_ip,
             'threat_score': score_result['threat_score'],
             'is_anomalous': score_result['is_anomalous'],
@@ -208,7 +208,9 @@ async def attacker_action(action: AttackerAction):
 
     # 5. Check for fingerprinting and trigger mutation if detected
     if detect_fingerprinting(action):
-        new_topology = await trigger_mutation(sio, current_topology)
+        async with state_lock:
+            topo_snapshot = current_topology.model_copy(deep=True)
+        new_topology = await trigger_mutation(sio, topo_snapshot)
         await spawn_topology(new_topology, sio)
         async with state_lock:
             current_topology = new_topology
@@ -277,8 +279,8 @@ async def download_credential(node_id: str, cred_id: str, request: Request):
         cred = next((c for c in creds_for_node if c.cred_type == cred_id), None)
     if not cred:
         raise HTTPException(status_code=404, detail="Credential not found")
-        
-    cred_manager.mark_accessed(cred_id)
+
+    cred_manager.mark_accessed(cred.cred_id)
     
     attacker_ip = request.headers.get("X-Forwarded-For") or request.client.host
     
@@ -300,7 +302,8 @@ async def download_credential(node_id: str, cred_id: str, request: Request):
                 "cred_id": cred.cred_id,
                 "filename": cred.filename,
                 "cred_type": cred.cred_type,
-                "attacker_ip": attacker_ip
+                "attacker_ip": attacker_ip,
+                "accessed_at": cred.accessed_at
             })
         except Exception:
             pass

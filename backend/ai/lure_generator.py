@@ -57,10 +57,12 @@ async def maybe_spawn_lure(
     lure_config = OBJECTIVE_TO_LURE[matched_key]
     node_type = lure_config['node_type']
 
-    # Deduplicate: do not spawn more than 2 honeypot nodes of the same category in the active subnet
-    existing_types = [node.node_type for node in current_topology.nodes]
-    if existing_types.count(node_type) >= 2:
-        print(f"[*] Subnet already has {existing_types.count(node_type)} {node_type} instances. Skipping adaptive lure deployment to prevent clutter.")
+    # Deduplicate: do not spawn more than 2 LURE nodes of the same category in the active subnet
+    # (Count only lures, not base topology nodes)
+    existing_lures = [node for node in current_topology.nodes if node.node_id.startswith('lure_')]
+    lure_types = [node.node_type for node in existing_lures]
+    if lure_types.count(node_type) >= 2:
+        print(f"[*] Subnet already has {lure_types.count(node_type)} {node_type} lures. Skipping adaptive lure deployment to prevent clutter.")
         return None
 
     # Pick a fresh, isolated IP address from the upper range of the bridge subnet (e.g. hosts after index 30)

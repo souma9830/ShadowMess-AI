@@ -55,7 +55,20 @@ async def trigger_mutation(sio, current_topology: TopologySnapshot) -> TopologyS
     await asyncio.sleep(1.5)
 
     # Step 3: Run the graph reshuffle and increment the network generation counter
-    new_topology = await mutate_topology(current_topology)
+    try:
+        new_topology = await mutate_topology(current_topology)
+    except Exception as e:
+        print(f"[ERROR] Topology mutation failed: {e}")
+        # Notify frontend that mutation failed
+        if sio:
+            try:
+                await sio.emit(EVENTS['ALERT'], {
+                    "message": "Topology mutation failed — system error",
+                    "severity": "critical"
+                })
+            except:
+                pass
+        raise
 
     # Step 4: Dispatch the new network structure to all SOC listeners
     if sio:

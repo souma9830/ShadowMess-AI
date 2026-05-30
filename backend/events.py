@@ -16,6 +16,8 @@ EVENTS = {
     'CANARY_TRIGGERED':   'canary_triggered',      # Attacker accessed a canary token URL
     'CREDENTIAL_STOLEN':  'credential_stolen',     # Attacker accessed fake credential file
     'LURE_SPAWNED':       'lure_spawned',          # Adaptive lure: new targeted fake service spun up
+    'THREAT_SCORE':       'threat_score',          # ML anomaly score for attacker action
+    'DNS_QUERY':          'dns_query',             # DNS query logged by honeypot
 
     # Frontend -> Backend Interactivity (Demo triggers)
     'TRIGGER_SCAN':       'trigger_scan',          # Manual scan simulation for demo

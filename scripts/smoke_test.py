@@ -29,15 +29,15 @@ try:
     sio = socketio.Client()
     connected = False
     pong_received = False
-    
+
     @sio.event
     def connect():
-        nonlocal connected
+        global connected
         connected = True
-        
+
     @sio.on('pong')
     def on_pong(data):
-        nonlocal pong_received
+        global pong_received
         if data == 'test':
             pong_received = True
 
