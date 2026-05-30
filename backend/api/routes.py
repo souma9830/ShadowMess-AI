@@ -544,6 +544,7 @@ async def download_decoy_doc(token_id: str, filename: str, request: Request):
         if len(attacker_actions[attacker_ip]) > _ACTION_LIST_MAX:
             attacker_actions[attacker_ip] = attacker_actions[attacker_ip][-_ACTION_LIST_TRIM:]
         _event_sequence += 1
+        sequence = _event_sequence
     asyncio.create_task(neo4j_client.log_action(action))
     asyncio.create_task(redis_client.save_action(attacker_ip, action))
 
