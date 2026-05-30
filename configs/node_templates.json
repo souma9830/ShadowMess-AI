@@ -1,0 +1,37 @@
+{
+  "web_server": {
+    "ports": [80, 443, 8080],
+    "banner": "Apache/2.4.41",
+    "os": "Ubuntu 20.04"
+  },
+  "db_server": {
+    "ports": [3306, 5432],
+    "banner": "MySQL 8.0.28",
+    "os": "CentOS 7"
+  },
+  "auth_service": {
+    "ports": [389, 636, 88],
+    "banner": "OpenLDAP 2.4",
+    "os": "Windows Server 2019"
+  },
+  "file_server": {
+    "ports": [445, 139, 21],
+    "banner": "Samba 4.11",
+    "os": "Windows Server 2016"
+  },
+  "api_gateway": {
+    "ports": [443, 8443],
+    "banner": "nginx/1.18.0",
+    "os": "Ubuntu 22.04"
+  },
+  "mail_server": {
+    "ports": [25, 143, 587],
+    "banner": "Postfix 3.4",
+    "os": "Debian 11"
+  },
+  "workstation": {
+    "ports": [135, 3389],
+    "banner": "RDP",
+    "os": "Windows 10"
+  }
+}
