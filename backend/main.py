@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from backend.database.neo4j_client import neo4j_client
 from backend.api.routes import router as api_router, set_sio
 from backend.events import EVENTS
+from backend.mitre.mapper import mitre_mapper
+from backend.deception.container_manager import active_containers
 
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
 set_sio(sio)
@@ -85,8 +87,8 @@ async def health():
     return {
         "status": "ok",
         "neo4j": healthy,
-        "mitre_loaded": False,
-        "active_containers": 0
+        "mitre_loaded": mitre_mapper._is_initialized,
+        "active_containers": len(active_containers)
     }
 
 if __name__ == "__main__":

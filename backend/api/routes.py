@@ -4,6 +4,13 @@ from collections import defaultdict
 from backend.models import ScanEvent, AttackerAction, TopologySnapshot, AttackerProfile
 from backend.database.neo4j_client import neo4j_client
 from backend.events import EVENTS
+from backend.ai.profiler import profile_attacker
+from backend.ai.topology import generate_topology
+from backend.ai.mutator import trigger_mutation
+from backend.ai.lure_generator import maybe_spawn_lure
+from backend.mitre.mapper import mitre_mapper
+from backend.alerting import slack
+from backend.deception.container_manager import spawn_topology
 
 router = APIRouter()
 
@@ -29,31 +36,111 @@ async def set_topology(new_topology: TopologySnapshot):
 
 @router.post("/detect/scan")
 async def detect_scan(scan: ScanEvent):
-    global _event_sequence
+    global current_topology, _event_sequence
+
+    # Generate a fresh deception topology on first recon
+    if not current_topology.nodes:
+        new_topo = await generate_topology(generation=1)
+        await spawn_topology(new_topo, sio)
+        async with state_lock:
+            current_topology = new_topo
+            _event_sequence += 1
+
     if sio:
         await sio.emit(EVENTS['RECON_DETECTED'], scan.model_dump())
-    
+        # Send topology immediately so the dashboard graph populates
+        await sio.emit(EVENTS['TOPOLOGY_UPDATE'], current_topology.model_dump())
+
+    # Fire Slack alert in background — never blocks the response
+    asyncio.create_task(slack.alert_recon_detected(scan.source_ip, scan.scan_type))
+
     return {"status": "deception_activated", "node_count": len(current_topology.nodes)}
+
+
+async def _run_profiling_pipeline(action: AttackerAction):
+    """
+    Background task: runs MITRE tagging, attacker profiling, and adaptive lure
+    spawning — all decoupled from the hot request path.
+    """
+    global attacker_profiles, current_topology
+
+    ip = action.attacker_ip
+    actions_for_ip = attacker_actions.get(ip, [])
+
+    # --- MITRE tagging ---
+    mitre_tag = mitre_mapper.tag_action(action.action_type, action.detail)
+    if mitre_tag and sio:
+        await sio.emit(EVENTS['MITRE_TAG'], {
+            'attacker_ip': ip,
+            'technique_id': mitre_tag['technique_id'],
+            'technique_name': mitre_tag['technique_name'],
+            'tactic': mitre_tag['tactic'],
+        })
+
+    # --- AI Profiling (Groq or local heuristic) ---
+    try:
+        profile = await profile_attacker(ip, actions_for_ip)
+        attacker_profiles[ip] = profile
+        if sio:
+            payload = profile.model_dump()
+            payload['attacker_ip'] = ip  # ensure field present for frontend
+            await sio.emit(EVENTS['PROFILE_UPDATE'], payload)
+
+        # --- Slack: alert on new high-skill profile ---
+        if profile.skill_level in ('Advanced', 'Nation-State APT') and profile.confidence > 0.6:
+            asyncio.create_task(slack.send_slack_alert(
+                message=f"High-skill attacker profiled: `{ip}` — {profile.skill_level}",
+                severity='critical',
+                fields={
+                    'Attacker IP': ip,
+                    'Objective': profile.objective,
+                    'APT Resemblance': profile.apt_resemblance,
+                    'Confidence': f"{int(profile.confidence * 100)}%",
+                }
+            ))
+
+        # --- Adaptive lure spawning ---
+        async with state_lock:
+            topo_snapshot = current_topology
+
+        lure_node = await maybe_spawn_lure(profile, topo_snapshot, sio, topo_snapshot.generation)
+        if lure_node:
+            async with state_lock:
+                current_topology.nodes.append(lure_node)
+                _event_sequence += 1
+                payload = current_topology.model_dump()
+                payload['sequence'] = _event_sequence
+                
+            if sio:
+                await sio.emit(EVENTS['TOPOLOGY_UPDATE'], payload)
+
+    except Exception as e:
+        print(f"[ERROR] Profiling pipeline failed for {ip}: {e}")
+
 
 @router.post("/attacker/action")
 async def attacker_action(action: AttackerAction):
     global _event_sequence
-    
+
     # 1. Log to Neo4j
     await neo4j_client.log_action(action)
-    
+
     # 2. Append to in-memory list inside lock
     async with state_lock:
         attacker_actions[action.attacker_ip].append(action)
         _event_sequence += 1
         sequence = _event_sequence
-        
+
     if sio:
         payload = action.model_dump()
         payload['sequence'] = sequence
         await sio.emit(EVENTS['ATTACKER_ACTION'], payload)
-        
+
+    # 3. Run MITRE + profiling + lure pipeline in background — never blocks response
+    asyncio.create_task(_run_profiling_pipeline(action))
+
     return {"status": "logged"}
+
 
 @router.get("/topology/current")
 async def get_topology_current():
@@ -72,7 +159,7 @@ async def get_attackers():
     for ip, actions in attacker_actions.items():
         if not actions: continue
         profile = attacker_profiles.get(ip)
-        
+
         # safely extract skill level from either dict or AttackerProfile object
         skill_level = 'Unknown'
         if profile:
@@ -80,7 +167,7 @@ async def get_attackers():
                 skill_level = profile.get('skill_level', 'Unknown')
             else:
                 skill_level = getattr(profile, 'skill_level', 'Unknown')
-                
+
         sessions.append({
             "ip": ip,
             "action_count": len(actions),
@@ -99,19 +186,16 @@ async def get_attack_path(attacker_ip: str):
     path = await neo4j_client.get_attack_path(attacker_ip)
     return path
 
+
 async def _do_mutate():
-    """Background task: signal mutation, wait, then broadcast new topology."""
-    global current_topology, _event_sequence
-    if not sio:
-        return
-    await sio.emit(EVENTS['TOPOLOGY_MUTATING'], {"status": "mutating"})
-    await asyncio.sleep(1.5)  # OK here — not blocking a request handler
+    """Background task: use Phase 3 mutator to reshuffle topology and broadcast."""
+    global current_topology
+    new_topology = await trigger_mutation(sio, current_topology)
+    await spawn_topology(new_topology, sio)
     async with state_lock:
-        current_topology.generation += 1
-        _event_sequence += 1
-        payload = current_topology.model_dump()
-        payload['sequence'] = _event_sequence
-    await sio.emit(EVENTS['TOPOLOGY_UPDATE'], payload)
+        current_topology = new_topology
+    # Slack alert for topology mutation
+    asyncio.create_task(slack.alert_topology_mutated(new_topology.generation))
 
 @router.post("/topology/mutate")
 async def mutate_topology():

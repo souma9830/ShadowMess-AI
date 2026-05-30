@@ -28,6 +28,18 @@ async def spawn_topology(topology: TopologySnapshot, sio):
     """
     print(f"[Deception Mock] Spawning deception topology generation {topology.generation}")
     for node in topology.nodes:
-        cid = await spawn_container(node)
-        if cid:
-            node.container_id = cid
+        if not node.container_id:
+            cid = await spawn_container(node)
+            if cid:
+                node.container_id = cid
+                
+            # Emit event for new container
+            if sio:
+                try:
+                    await sio.emit('container_spawned', {
+                        'node_id': node.node_id,
+                        'node_type': node.node_type,
+                        'ip': node.ip
+                    })
+                except Exception as e:
+                    pass
