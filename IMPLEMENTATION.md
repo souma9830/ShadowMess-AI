@@ -1230,7 +1230,7 @@ STRIPE_SECRET_KEY=[REDACTED]
   },
   'aws_key': {
     'filename': 'credentials.csv',
-    'template': 'User Name,Access key ID,Secret access key\nprod-admin,AKIAIOSFODNN7EXAMPLE,wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n'
+    'template': 'User Name,Access key ID,Secret access key\nprod-admin,[REDACTED],[REDACTED]\n'
   },
   'ssh_key': {
     'filename': 'id_rsa',
