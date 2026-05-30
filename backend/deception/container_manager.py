@@ -1,24 +1,16 @@
 """
-ShadowMesh — Task 4.3: Container Manager
-=========================================
-Production-grade container lifecycle manager for the ShadowMesh deception platform.
+ShadowMesh — Task 9.5: Container Manager (Orchestrator Edition)
+================================================================
+The backend NO LONGER touches Docker directly.
+All container lifecycle operations are delegated to the orchestrator
+service via HTTP (httpx), which is the sole holder of the Docker socket.
 
-Responsibilities:
-  - Spawns honeypot Docker containers from topology nodes
-  - Maps node_type → pre-built honeypot Docker images
-  - Enforces strict resource limits (64 MB RAM, 25% CPU)
-  - Drops all Linux capabilities and blocks privilege escalation
-  - Tracks active containers via an in-memory registry
-  - Tears down all active containers on topology mutation
-  - Emits Socket.IO events on container lifecycle changes
-  - Handles Docker daemon unavailability gracefully (no crash)
+Architecture:
+  backend  ──httpx──►  orchestrator ──docker.sock──►  Docker daemon
 
-Docker images used (must be pre-built):
-  shadowmesh-fake-http   — Task 4.2A
-  shadowmesh-fake-db     — Task 4.2B
-  shadowmesh-fake-api    — Task 4.2C
-  shadowmesh-fake-auth   — Task 4.2D
-  shadowmesh-fake-ssh    — Task 4.1
+Environment variables:
+  ORCHESTRATOR_URL        URL of the orchestrator service (default: http://localhost:9000)
+  HONEYPOT_CALLBACK_URL   Injected into each honeypot container as ATTACKER_CALLBACK_URL
 """
 
 import asyncio
@@ -26,242 +18,183 @@ import logging
 import os
 from typing import Dict, Optional
 
+import httpx
+
 from backend.models import NetworkNode, TopologySnapshot
 from backend.deception.credentials import cred_manager
 from backend.deception.canary import canary_manager
 
-HONEYPOT_CALLBACK_URL = os.getenv("HONEYPOT_CALLBACK_URL", "http://host.docker.internal:8000")
-
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
 log = logging.getLogger("container_manager")
 
-# ---------------------------------------------------------------------------
-# Docker SDK — imported lazily and guarded against absence
-# ---------------------------------------------------------------------------
-_docker_client = None
-_docker_available = False
+ORCHESTRATOR_URL     = os.getenv("ORCHESTRATOR_URL", "http://localhost:9000")
+HONEYPOT_CALLBACK_URL = os.getenv("HONEYPOT_CALLBACK_URL", "http://host.docker.internal:8000")
 
-try:
-    import docker
-    _docker_client = docker.from_env()
-    # Quick connectivity probe — does not raise if the daemon socket exists
-    _docker_client.ping()
-    _docker_available = True
-    log.info("[container_manager] Docker daemon connected successfully.")
-except Exception as exc:
-    log.warning(
-        "[container_manager] Docker is NOT available (%s). "
-        "Container operations will be no-ops until Docker is reachable.",
-        exc,
-    )
-
-# ---------------------------------------------------------------------------
-# Image Mapping — node_type → Docker image name
-# ---------------------------------------------------------------------------
-CONTAINER_IMAGES: Dict[str, str] = {
-    "web_server":   "shadowmesh-fake-http",
-    "db_server":    "shadowmesh-fake-db",
-    "auth_service": "shadowmesh-fake-auth",
-    "file_server":  "shadowmesh-fake-http",
-    "api_gateway":  "shadowmesh-fake-api",
-    "mail_server":  "shadowmesh-fake-http",
-    "workstation":  "shadowmesh-fake-http",
-}
-
-# Docker network all honeypots will be attached to
-DOCKER_NETWORK = "shadowmesh_deception_net"
-
-# ---------------------------------------------------------------------------
-# State Tracking — node_id → container_id
-# ---------------------------------------------------------------------------
+# node_id → container_id tracking (in-process)
 active_containers: Dict[str, str] = {}
+
+# HTTP client timeout: 30 s to allow slow image pulls
+_TIMEOUT = httpx.Timeout(30.0)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+async def _orchestrator_request(method: str, path: str, **kwargs) -> Optional[dict]:
+    """
+    Fire a single request to the orchestrator and return parsed JSON, or
+    None if the orchestrator is unreachable / returns an error.
+    Never raises — always returns None on any failure.
+    """
+    url = f"{ORCHESTRATOR_URL}{path}"
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await getattr(client, method)(url, **kwargs)
+        if resp.status_code < 400:
+            return resp.json()
+        log.error("[orchestrator] %s %s → %d: %s", method.upper(), url, resp.status_code, resp.text[:200])
+        return None
+    except httpx.ConnectError:
+        log.error("[orchestrator] Unreachable at %s — is the orchestrator running?", ORCHESTRATOR_URL)
+        return None
+    except Exception as exc:
+        log.error("[orchestrator] Request failed (%s %s): %s", method.upper(), url, exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
 # Function 1: spawn_container
 # ---------------------------------------------------------------------------
+
 async def spawn_container(node: NetworkNode, canary_url: str = "") -> Optional[str]:
     """
-    Spawn a single honeypot container for the given topology node.
-
-    Steps:
-      1. Resolve Docker image from node.node_type via CONTAINER_IMAGES.
-      2. Launch container with enforced resource limits, security hardening,
-         and the required environment variables (NODE_ID, ATTACKER_CALLBACK_URL).
-      3. Register the container in the active_containers registry.
-      4. Return the container ID, or None on any failure.
+    Ask the orchestrator to spawn a honeypot container for `node`.
+    Returns the container short ID on success, or None on any failure.
     """
-    global _docker_client, _docker_available
-
-    if not _docker_available or _docker_client is None:
-        log.warning(
-            "[spawn] Docker unavailable — skipping spawn for node %s",
-            node.node_id,
-        )
-        return None
-
-    image = CONTAINER_IMAGES.get(node.node_type)
-    if image is None:
-        log.error(
-            "[spawn] Unknown node_type '%s' for node %s — no image mapping",
-            node.node_type,
-            node.node_id,
-        )
-        return None
-
-    # Derive a short suffix from the node_id for the hostname
-    suffix = node.node_id.replace("node_", "").replace("_", "")
-    hostname = f"fake-{node.node_type.replace('_', '-')}-{suffix}"
-    container_name = f"sm_{node.node_id}"
-
-    try:
-        container = await asyncio.get_running_loop().run_in_executor(
-            None,
-            lambda: _docker_client.containers.run(
-                image=image,
-                detach=True,
-                remove=True,
-                name=container_name,
-                hostname=hostname,
-                network=DOCKER_NETWORK,
-                environment={
-                    "NODE_ID": node.node_id,
-                    "ATTACKER_CALLBACK_URL": HONEYPOT_CALLBACK_URL,
-                    "CANARY_WIKI_URL": canary_url,
-                },
-                mem_limit="64m",
-                cpu_period=100000,
-                cpu_quota=25000,
-                security_opt=["no-new-privileges:true"],
-                cap_drop=["ALL"],
-            ),
-        )
-
-        cid = container.short_id
-        active_containers[node.node_id] = cid
-        log.info(
-            "[spawn] ✓ %s (%s) → container %s [%s]",
-            node.node_id,
-            node.node_type,
-            cid,
-            image,
-        )
-        return cid
-
-    except Exception as exc:
-        log.error(
-            "[spawn] ✗ Failed to spawn container for node %s (%s): %s",
-            node.node_id,
-            node.node_type,
-            exc,
-        )
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Function 2: teardown_all
-# ---------------------------------------------------------------------------
-async def teardown_all() -> None:
-    """
-    Stop and remove every container tracked in active_containers.
-
-    - Uses a 2-second stop timeout.
-    - Ignores individual stop failures (container may already be gone).
-    - Clears the active_containers registry after sweep.
-    """
-    global _docker_client, _docker_available
-
-    if not active_containers:
-        log.info("[teardown] No active containers to tear down.")
-        return
-
-    log.info(
-        "[teardown] Tearing down %d active container(s): %s",
-        len(active_containers),
-        list(active_containers.keys()),
+    result = await _orchestrator_request(
+        "post",
+        "/spawn",
+        json={
+            "node_id":      node.node_id,
+            "node_type":    node.node_type,
+            "callback_url": HONEYPOT_CALLBACK_URL,
+            "canary_url":   canary_url,
+        },
     )
 
-    for node_id, cid in list(active_containers.items()):
+    if result is None:
+        log.warning("[spawn] Orchestrator returned no result for node %s", node.node_id)
+        return None
+
+    if "error" in result:
+        log.error("[spawn] Orchestrator rejected node %s: %s", node.node_id, result["error"])
+        return None
+
+    cid = result.get("container_id")
+    if cid:
+        active_containers[node.node_id] = cid
+        log.info("[spawn] ✓ %s (%s) → container %s", node.node_id, node.node_type, cid)
+    return cid
+
+
+# ---------------------------------------------------------------------------
+# Function 2: teardown_container
+# ---------------------------------------------------------------------------
+
+async def teardown_container(node_id: str) -> bool:
+    """
+    Ask the orchestrator to stop and remove the container for `node_id`.
+    Clears the local registry entry regardless of whether the orchestrator
+    call succeeds (container may already be gone).
+    Returns True if the orchestrator confirmed the stop.
+    """
+    # Clean up local state first so callers never see stale entries
+    active_containers.pop(node_id, None)
+    cred_manager.clear_for_node(node_id)
+    canary_manager.clear_for_node(node_id)
+
+    result = await _orchestrator_request("delete", f"/teardown/{node_id}")
+    if result is None:
+        log.warning("[teardown] Orchestrator did not confirm teardown for %s", node_id)
+        return False
+
+    log.info("[teardown] Confirmed: %s", result)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Function 3: teardown_all
+# ---------------------------------------------------------------------------
+
+async def teardown_all() -> None:
+    """
+    Ask the orchestrator to stop ALL containers, then clear local state.
+    """
+    if not active_containers:
+        log.info("[teardown_all] No active containers to tear down.")
+        return
+
+    log.info("[teardown_all] Tearing down %d container(s): %s",
+             len(active_containers), list(active_containers.keys()))
+
+    # Clear local state — even if orchestrator fails we don't want stale refs
+    for node_id in list(active_containers.keys()):
         cred_manager.clear_for_node(node_id)
         canary_manager.clear_for_node(node_id)
-        try:
-            if _docker_available and _docker_client is not None:
-                container = await asyncio.get_running_loop().run_in_executor(
-                    None,
-                    lambda cid=cid: _docker_client.containers.get(cid),
-                )
-                await asyncio.get_running_loop().run_in_executor(
-                    None,
-                    lambda c=container: c.stop(timeout=2),
-                )
-            log.info("[teardown] Stopped container %s (node %s)", cid, node_id)
-        except Exception as exc:
-            log.warning(
-                "[teardown] Could not stop container %s (node %s): %s",
-                cid,
-                node_id,
-                exc,
-            )
-
     active_containers.clear()
-    log.info("[teardown] All containers cleared.")
+
+    result = await _orchestrator_request("delete", "/teardown-all")
+    if result:
+        log.info("[teardown_all] Orchestrator stopped %d container(s).", result.get("stopped", "?"))
+    else:
+        log.warning("[teardown_all] Orchestrator did not confirm teardown — containers may still be running.")
 
 
 # ---------------------------------------------------------------------------
-# Function 3: spawn_topology
+# Function 4: spawn_topology
 # ---------------------------------------------------------------------------
+
 async def spawn_topology(topology: TopologySnapshot, sio) -> None:
     """
     Deploy a full deception topology.
 
     Steps:
-      1. Tear down all previously active containers.
-      2. Iterate over topology.nodes and spawn a container for each.
-      3. Stamp the container_id back onto the topology node.
+      1. Tear down all previously active containers via orchestrator.
+      2. Iterate topology.nodes and spawn a container for each.
+      3. Stamp the returned container_id back onto the node.
       4. Emit a 'container_spawned' Socket.IO event for each success.
       5. Continue even if individual containers fail.
     """
-    log.info(
-        "[topology] Deploying topology generation %d (%d nodes)",
-        topology.generation,
-        len(topology.nodes),
-    )
+    log.info("[topology] Deploying generation %d (%d nodes)",
+             topology.generation, len(topology.nodes))
 
     # Step 1 — clean slate
     await teardown_all()
 
-    # Step 2 & 3 — spawn each node
+    # Steps 2, 3, 4
     for node in topology.nodes:
-        # Pre-generate canary tokens so the URL can be injected into the container env
+        # Pre-generate credentials and canary tokens so URLs can be
+        # passed into the container environment at spawn time.
         cred_manager.generate_for_node(node.node_id)
         tokens = canary_manager.generate_for_node(node.node_id)
         wiki_token = next((t for t in tokens if t.token_type == "url"), None)
         canary_url = wiki_token.token_url if wiki_token else ""
 
         cid = await spawn_container(node, canary_url=canary_url)
-
         if cid:
             node.container_id = cid
 
-        # Step 4 — emit Socket.IO event
+        # Emit regardless of success so the frontend always gets a node event
         if sio is not None:
             try:
                 await sio.emit("container_spawned", {
-                    "node_id": node.node_id,
-                    "node_type": node.node_type,
+                    "node_id":      node.node_id,
+                    "node_type":    node.node_type,
+                    "container_id": node.container_id,
                 })
             except Exception as exc:
-                log.warning(
-                    "[topology] Socket.IO emit failed for node %s: %s",
-                    node.node_id,
-                    exc,
-                )
+                log.warning("[topology] Socket.IO emit failed for %s: %s", node.node_id, exc)
 
     spawned = sum(1 for n in topology.nodes if n.container_id)
-    log.info(
-        "[topology] Deployment complete — %d/%d containers active.",
-        spawned,
-        len(topology.nodes),
-    )
+    log.info("[topology] Deployment complete — %d/%d containers active.",
+             spawned, len(topology.nodes))
