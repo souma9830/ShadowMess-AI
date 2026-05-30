@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { useSocketEvents } from './hooks/useSocketEvents';
 import { useShadowStore } from './store/useShadowStore';
 import StatsBar from './components/StatsBar';
@@ -16,6 +16,15 @@ function App() {
   const { isConnected } = useSocketEvents();
   const isDeceptionActive = useShadowStore(state => state.isDeceptionActive);
   const activeBreadcrumbs = useShadowStore(state => state.activeBreadcrumbs);
+
+  // Dwell time timer — ticks every second while deception is active
+  useEffect(() => {
+    if (!isDeceptionActive) return;
+    const interval = setInterval(() => {
+      useShadowStore.getState().incrementStat('dwellTimeSeconds');
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isDeceptionActive]);
 
   return (
     <div className="flex flex-col h-screen overflow-hidden text-white bg-[#0d0d0d]">

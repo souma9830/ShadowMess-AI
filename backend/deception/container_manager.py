@@ -25,7 +25,9 @@ async def teardown_all():
 async def spawn_topology(topology: TopologySnapshot, sio):
     """
     Mock implementation of topology spawning.
+    Tears down existing containers first, then spawns the new topology.
     """
+    await teardown_all()
     print(f"[Deception Mock] Spawning deception topology generation {topology.generation}")
     for node in topology.nodes:
         if not node.container_id:

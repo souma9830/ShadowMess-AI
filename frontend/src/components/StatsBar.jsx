@@ -2,6 +2,12 @@ import React from 'react';
 import { useShadowStore } from '../store/useShadowStore';
 import { Activity, Clock, Terminal, ShieldAlert } from 'lucide-react';
 
+function formatDwellTime(totalSeconds) {
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
 export default function StatsBar() {
   const { sessionStats, isDeceptionActive } = useShadowStore();
 
@@ -19,7 +25,7 @@ export default function StatsBar() {
         <Clock className="text-shadowPurple w-5 h-5" />
         <div>
           <div className="text-[10px] text-gray-400 uppercase tracking-wider">Dwell Time</div>
-          <div className="text-lg font-mono leading-none">{sessionStats.dwellTimeSeconds}s</div>
+          <div className="text-lg font-mono leading-none">{formatDwellTime(sessionStats.dwellTimeSeconds)}</div>
         </div>
       </div>
       <div className="bg-[#1a1a1a] p-2 rounded flex items-center gap-3 border border-[#2a2a2a]">

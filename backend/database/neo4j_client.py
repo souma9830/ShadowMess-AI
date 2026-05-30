@@ -27,7 +27,8 @@ class Neo4jClient:
             await session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (a:Attacker) REQUIRE a.ip IS UNIQUE")
             await session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (n:Node) REQUIRE n.node_id IS UNIQUE")
             await session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (c:Credential) REQUIRE c.credential_id IS UNIQUE")
-            await session.run("CREATE INDEX IF NOT EXISTS FOR (a:AttackerAction) ON (a.timestamp)")
+            # Note: attacker actions are stored as :PERFORMED relationships, not nodes,
+            # so no node index is created here.
 
     async def health_check(self) -> bool:
         try:
@@ -65,7 +66,7 @@ class Neo4jClient:
                 healthy = await self.health_check()
                 if healthy:
                     await self.seed_demo_data()
-                _neo4j_available = True
+                _neo4j_available = healthy
                 print(f"✅ Neo4j connected (attempt {attempt+1})")
                 return True
             except Exception as e:
@@ -106,8 +107,8 @@ class Neo4jClient:
             mitre_id=action.mitre_technique_id or "",
             mitre_name=action.mitre_technique_name or "")
 
-    async def get_attack_path(self, attacker_ip: str) -> list[dict]:
-        if not _neo4j_available: return []
+    async def get_attack_path(self, attacker_ip: str) -> dict:
+        if not _neo4j_available: return {"nodes": [], "relationships": []}
         async with self.driver.session() as session:
             result = await session.run("""
                 MATCH p = (a:Attacker {ip: $ip})-[:PERFORMED*]->(n:Node)
@@ -126,7 +127,7 @@ class Neo4jClient:
                     "nodes": record["path_nodes"],
                     "relationships": record["path_rels"]
                 }
-            return []
+            return {"nodes": [], "relationships": []}
 
     async def get_all_actions(self, attacker_ip: str) -> list[dict]:
         if not _neo4j_available: return []

@@ -17,6 +17,7 @@ router = APIRouter()
 # Global state
 state_lock = asyncio.Lock()
 _event_sequence: int = 0
+_deception_activated: bool = False  # prevents double topology generation race
 current_topology = TopologySnapshot(nodes=[], edges=[], generation=0)
 attacker_profiles = {}
 attacker_actions = defaultdict(list)
@@ -36,19 +37,31 @@ async def set_topology(new_topology: TopologySnapshot):
 
 @router.post("/detect/scan")
 async def detect_scan(scan: ScanEvent):
-    global current_topology, _event_sequence
+    global current_topology, _event_sequence, _deception_activated
 
-    # Generate a fresh deception topology on first recon
-    if not current_topology.nodes:
-        new_topo = await generate_topology(generation=1)
-        await spawn_topology(new_topo, sio)
-        async with state_lock:
-            current_topology = new_topo
-            _event_sequence += 1
+    # Claim the deception slot atomically to prevent double topology generation
+    # when on_recon_detected (Scapy thread) and this route fire simultaneously.
+    async with state_lock:
+        already_active = _deception_activated
+        if not already_active:
+            _deception_activated = True
+
+    if not already_active:
+        try:
+            new_topo = await generate_topology(generation=1)
+            await spawn_topology(new_topo, sio)
+            async with state_lock:
+                current_topology = new_topo
+                _event_sequence += 1
+        except Exception as e:
+            # Reset flag so the next scan event can retry topology generation
+            async with state_lock:
+                _deception_activated = False
+            print(f"[ERROR] detect_scan: topology generation failed, flag reset: {e}")
+            raise
 
     if sio:
         await sio.emit(EVENTS['RECON_DETECTED'], scan.model_dump())
-        # Send topology immediately so the dashboard graph populates
         await sio.emit(EVENTS['TOPOLOGY_UPDATE'], current_topology.model_dump())
 
     # Fire Slack alert in background — never blocks the response
@@ -59,23 +72,17 @@ async def detect_scan(scan: ScanEvent):
 
 async def _run_profiling_pipeline(action: AttackerAction):
     """
-    Background task: runs MITRE tagging, attacker profiling, and adaptive lure
-    spawning — all decoupled from the hot request path.
+    Background task: runs attacker profiling and adaptive lure
+    spawning — decoupled from the hot request path.
     """
     global attacker_profiles, current_topology
 
     ip = action.attacker_ip
     actions_for_ip = attacker_actions.get(ip, [])
 
-    # --- MITRE tagging ---
-    mitre_tag = mitre_mapper.tag_action(action.action_type, action.detail)
-    if mitre_tag and sio:
-        await sio.emit(EVENTS['MITRE_TAG'], {
-            'attacker_ip': ip,
-            'technique_id': mitre_tag['technique_id'],
-            'technique_name': mitre_tag['technique_name'],
-            'tactic': mitre_tag['tactic'],
-        })
+    # Rate limit Groq profiling to every 3 actions per IP
+    if len(actions_for_ip) % 3 != 0:
+        return
 
     # --- AI Profiling (Groq or local heuristic) ---
     try:
@@ -101,7 +108,9 @@ async def _run_profiling_pipeline(action: AttackerAction):
 
         # --- Adaptive lure spawning ---
         async with state_lock:
-            topo_snapshot = current_topology
+            # Deep copy so lure spawning works on a stable snapshot even if
+            # current_topology is replaced by a mutation during the await below.
+            topo_snapshot = current_topology.model_copy(deep=True)
 
         lure_node = await maybe_spawn_lure(profile, topo_snapshot, sio, topo_snapshot.generation)
         if lure_node:
@@ -120,12 +129,25 @@ async def _run_profiling_pipeline(action: AttackerAction):
 
 @router.post("/attacker/action")
 async def attacker_action(action: AttackerAction):
-    global _event_sequence
+    global _event_sequence, current_topology
 
-    # 1. Log to Neo4j
+    # 1. Tag with MITRE synchronously BEFORE saving
+    mitre_tag = mitre_mapper.tag_action(action.action_type, action.detail)
+    if mitre_tag:
+        action.mitre_technique_id = mitre_tag['technique_id']
+        action.mitre_technique_name = mitre_tag['technique_name']
+        if sio:
+            await sio.emit(EVENTS['MITRE_TAG'], {
+                'attacker_ip': action.attacker_ip,
+                'technique_id': mitre_tag['technique_id'],
+                'technique_name': mitre_tag['technique_name'],
+                'tactic': mitre_tag['tactic'],
+            })
+
+    # 2. Log to Neo4j
     await neo4j_client.log_action(action)
 
-    # 2. Append to in-memory list inside lock
+    # 3. Append to in-memory list inside lock
     async with state_lock:
         attacker_actions[action.attacker_ip].append(action)
         _event_sequence += 1
@@ -136,7 +158,18 @@ async def attacker_action(action: AttackerAction):
         payload['sequence'] = sequence
         await sio.emit(EVENTS['ATTACKER_ACTION'], payload)
 
-    # 3. Run MITRE + profiling + lure pipeline in background — never blocks response
+    # 4. Check for fingerprinting and trigger mutation if detected
+    from backend.ai.mutator import detect_fingerprinting
+    if detect_fingerprinting(action):
+        new_topology = await trigger_mutation(sio, current_topology)
+        await spawn_topology(new_topology, sio)
+        async with state_lock:
+            current_topology = new_topology
+            _event_sequence += 1
+        asyncio.create_task(slack.alert_topology_mutated(new_topology.generation))
+        return {"status": "mutated"}
+
+    # 5. Run profiling + lure pipeline in background (rate-limited)
     asyncio.create_task(_run_profiling_pipeline(action))
 
     return {"status": "logged"}

@@ -8,8 +8,11 @@ import json
 import time
 import ipaddress
 import traceback
+import pathlib
 
-sys.path.insert(0, r"c:\Users\SOUMADEEP\OneDrive\Desktop\shadowmess\ShadowMess-AI")
+# Resolve project root dynamically — works on any machine
+PROJECT_ROOT = pathlib.Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 PASS = "PASS"
 FAIL = "FAIL"

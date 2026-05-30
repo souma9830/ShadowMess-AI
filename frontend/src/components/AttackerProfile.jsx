@@ -3,8 +3,6 @@ import { useShadowStore } from '../store/useShadowStore';
 import { useShallow } from 'zustand/react/shallow';
 import { motion } from 'framer-motion';
 
-const BACKEND_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:8000';
-
 export default function AttackerProfile() {
   const { focusedAttackerIp, attackerProfiles, threatScores } = useShadowStore(
     useShallow(state => ({
@@ -126,22 +124,22 @@ export default function AttackerProfile() {
           </div>
         )}
 
-        {/* Intelligence Export Buttons */}
+        {/* Intelligence Export Buttons — disabled until Phase 12 endpoints are live */}
         <div className="mt-4 flex gap-2">
-          <a 
-            href={`${BACKEND_URL}/api/intelligence/stix/${focusedAttackerIp}`} 
-            download
-            className="flex-1 bg-[#1a1a1a] hover:bg-[#2a2a2a] border border-[#333] text-center text-[10px] text-gray-300 py-1.5 rounded uppercase tracking-wider transition-colors"
+          <button
+            disabled
+            title="STIX 2.1 export — coming in Phase 12"
+            className="flex-1 bg-[#1a1a1a] border border-[#333] text-center text-[10px] text-gray-600 py-1.5 rounded uppercase tracking-wider cursor-not-allowed"
           >
             Export STIX 2.1
-          </a>
-          <a 
-            href={`${BACKEND_URL}/api/intelligence/report/${focusedAttackerIp}`}
-            target="_blank" rel="noreferrer"
-            className="flex-1 bg-shadowPurple/20 hover:bg-shadowPurple/30 border border-shadowPurple/40 text-center text-[10px] text-shadowPurple py-1.5 rounded uppercase tracking-wider transition-colors"
+          </button>
+          <button
+            disabled
+            title="Threat report — coming in Phase 12"
+            className="flex-1 bg-[#1a1a1a] border border-[#333] text-center text-[10px] text-gray-600 py-1.5 rounded uppercase tracking-wider cursor-not-allowed"
           >
             Generate Report
-          </a>
+          </button>
         </div>
       </div>
     </motion.div>
