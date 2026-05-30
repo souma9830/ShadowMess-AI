@@ -1,5 +1,5 @@
 import asyncio
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 from collections import defaultdict
 from backend.models import ScanEvent, AttackerAction, TopologySnapshot, AttackerProfile
 from backend.database.neo4j_client import neo4j_client
@@ -71,20 +71,21 @@ async def get_attack_path(attacker_ip: str):
     path = await neo4j_client.get_attack_path(attacker_ip)
     return path
 
+async def _do_mutate():
+    """Background task: signal mutation, wait, then broadcast new topology."""
+    global current_topology, _event_sequence
+    if not sio:
+        return
+    await sio.emit(EVENTS['TOPOLOGY_MUTATING'], {"status": "mutating"})
+    await asyncio.sleep(1.5)  # OK here — not blocking a request handler
+    async with state_lock:
+        current_topology.generation += 1
+        _event_sequence += 1
+        payload = current_topology.model_dump()
+        payload['sequence'] = _event_sequence
+    await sio.emit(EVENTS['TOPOLOGY_UPDATE'], payload)
+
 @router.post("/topology/mutate")
 async def mutate_topology():
-    global current_topology, _event_sequence
-    
-    if sio:
-        await sio.emit(EVENTS['TOPOLOGY_MUTATING'], {"status": "mutating"})
-        await asyncio.sleep(1.5)
-        # Stub mutation logic
-        async with state_lock:
-            current_topology.generation += 1
-            _event_sequence += 1
-            payload = current_topology.model_dump()
-            payload['sequence'] = _event_sequence
-            
-        await sio.emit(EVENTS['TOPOLOGY_UPDATE'], payload)
-        
-    return {"status": "mutated", "generation": current_topology.generation}
+    asyncio.create_task(_do_mutate())
+    return {"status": "mutating", "generation": current_topology.generation}

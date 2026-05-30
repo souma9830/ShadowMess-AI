@@ -1,0 +1,85 @@
+services:
+  neo4j:
+    image: neo4j:5.19
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/shadowmesh
+      NEO4J_PLUGINS: '["apoc"]'
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: wget -q --spider http://localhost:7474 || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: redis-cli ping || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  orchestrator:
+    build: ./orchestrator
+    ports:
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      DECEPTION_NETWORK: shadowmesh_deception_net
+    networks:
+      - deception_net
+    healthcheck:
+      test: wget -q --spider http://localhost:9000/health || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    env_file: .env
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      orchestrator:
+        condition: service_healthy
+    # network_mode: host required for Scapy (NET_RAW/NET_ADMIN).
+    # Backend reaches Neo4j/Redis via localhost since those ports are bound to host.
+    # Backend reaches orchestrator via host-mapped port 9000.
+    network_mode: host
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+networks:
+  deception_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+  redis_data:
