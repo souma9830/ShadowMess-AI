@@ -11,6 +11,7 @@ from backend.models import ScanEvent
 SCAN_WINDOW_SECONDS = 10
 SCAN_THRESHOLD_PORTS = 5   # >5 unique ports from same IP in 10s = port scan
 LATERAL_THRESHOLD = 3      # >3 unique target IPs from same IP = lateral movement
+MAX_TRACKED_IPS = 10000    # Global cap to prevent memory exhaustion from mass scanning
 
 
 def detect_network_interface() -> str:
@@ -85,6 +86,14 @@ class ReconDetector:
         self._target_hits[src_ip] = [(d, t) for d, t in self._target_hits[src_ip] if now - t < SCAN_WINDOW_SECONDS]
         if not self._target_hits[src_ip]:
             del self._target_hits[src_ip]
+
+        # Global cap: if tracking too many IPs, evict the oldest one
+        if len(self._port_hits) > MAX_TRACKED_IPS:
+            oldest_ip = min(self._port_hits.keys(),
+                           key=lambda ip: min(t for _, t in self._port_hits[ip]) if self._port_hits[ip] else now)
+            self._port_hits.pop(oldest_ip, None)
+            self._target_hits.pop(oldest_ip, None)
+            self._alerted_ips.pop(oldest_ip, None)
 
         unique_ports = len(set(p for p, _ in self._port_hits[src_ip]))
         unique_targets = len(set(d for d, _ in self._target_hits[src_ip]))

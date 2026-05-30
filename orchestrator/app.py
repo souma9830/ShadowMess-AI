@@ -241,5 +241,70 @@ def teardown_all():
     return jsonify({"status": "ok", "stopped": stopped})
 
 
+def _validate_images():
+    """
+    Validate that all required Docker images exist before starting.
+    Returns True if all images are present, False otherwise.
+    """
+    client = _get_docker()
+    if not client:
+        log.error("[startup] Docker daemon unavailable — cannot validate images")
+        return False
+
+    missing = []
+    for img in ALLOWED_IMAGES:
+        try:
+            client.images.get(img)
+            log.info("[startup] Image OK: %s", img)
+        except Exception:
+            missing.append(img)
+
+    if missing:
+        log.error("[startup] Missing Docker images: %s", missing)
+        log.error("[startup] Run: bash scripts/build_images.sh")
+        return False
+
+    log.info("[startup] All %d required images present", len(ALLOWED_IMAGES))
+    return True
+
+
+def _startup_cleanup():
+    """
+    Clean up any leftover containers from previous runs.
+    Prevents name collisions and stale container references.
+    """
+    client = _get_docker()
+    if not client:
+        return
+
+    log.info("[startup] Cleaning leftover containers...")
+    cleaned = 0
+    for c in client.containers.list(all=True):
+        if c.name.startswith('sm_'):
+            try:
+                c.stop(timeout=1)
+                c.remove(force=True)
+                cleaned += 1
+            except Exception as exc:
+                log.warning("[startup] Could not clean %s: %s", c.name, exc)
+
+    if cleaned > 0:
+        log.info("[startup] Cleaned %d leftover container(s)", cleaned)
+    else:
+        log.info("[startup] No leftover containers found")
+
+
 if __name__ == "__main__":
+    log.info("=" * 60)
+    log.info("ShadowMesh Orchestrator starting...")
+    log.info("=" * 60)
+
+    # Pre-flight checks
+    _startup_cleanup()
+
+    if not _validate_images():
+        log.error("[startup] Image validation FAILED — orchestrator will reject spawn requests")
+        log.error("[startup] Starting anyway to allow health checks, but spawning will fail")
+
+    log.info("[startup] Orchestrator ready on port 9000")
     app.run(host="0.0.0.0", port=9000, debug=False)

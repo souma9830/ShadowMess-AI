@@ -189,6 +189,9 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(_drain_projection_events())
 
+    # Start orchestrator health monitor
+    from backend.deception.container_manager import start_orchestrator_health_monitor
+    asyncio.create_task(start_orchestrator_health_monitor(sio, loop))
     print("ShadowMesh backend online")
     yield
     # Shutdown
