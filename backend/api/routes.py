@@ -220,6 +220,13 @@ async def get_attack_path(attacker_ip: str):
     return path
 
 
+@router.get("/dns/queries")
+async def get_dns_queries():
+    from backend.detection.dns_honeypot import get_instance
+    honeypot = get_instance()
+    return honeypot.get_query_log() if honeypot else []
+
+
 async def _do_mutate():
     """Background task: use Phase 3 mutator to reshuffle topology and broadcast."""
     global current_topology

@@ -63,18 +63,18 @@ async def handle_trigger_mutate(sid):
 async def lifespan(app: FastAPI):
     # Startup
     await neo4j_client.connect_with_retry()
-    
+
     from backend.detection.scanner import ReconDetector, detect_network_interface
+    from backend.detection.dns_honeypot import init_dns_honeypot
+    from backend.alerting import slack as alerting_slack
     import os
-    from backend.models import ScanEvent
+    from backend.models import ScanEvent, AttackerAction
     from backend.api import routes
     from backend.ai import topology
     from backend.deception import container_manager
-    
+
     async def on_recon_detected(scan_event: ScanEvent):
-        # Emit to all connected frontend clients
         await sio.emit(EVENTS['RECON_DETECTED'], scan_event.model_dump())
-        # Use the same _deception_activated flag as detect_scan to prevent race
         import backend.api.routes as routes_module
         async with routes_module.state_lock:
             already_active = routes_module._deception_activated
@@ -95,18 +95,53 @@ async def lifespan(app: FastAPI):
                 async with routes_module.state_lock:
                     routes_module._deception_activated = False
                 print(f"[ERROR] on_recon_detected: topology generation failed, flag reset: {e}")
-        # Log to Neo4j
         await neo4j_client.create_attacker(scan_event.source_ip)
+
+    async def on_dns_query(query_info: dict):
+        # Every query is intelligence — push to dashboard
+        await sio.emit('dns_query', query_info)
+
+        if query_info['is_planted']:
+            # High-value canary: attacker revealed their target
+            await sio.emit(EVENTS['ALERT'], {
+                'message': f'DNS canary triggered: {query_info["hostname"]} — {query_info["canary_hint"]}',
+                'severity': 'canary'
+            })
+            await sio.emit(EVENTS['CANARY_TRIGGERED'], {
+                'token_id': f'dns_{query_info["hostname"]}',
+                'label': query_info['hostname'],
+                'node_id': 'dns_layer',
+                'triggered_by_ip': query_info['source_ip']
+            })
+            asyncio.create_task(alerting_slack.alert_canary_triggered(
+                query_info['source_ip'], query_info['hostname'], 'dns_layer'
+            ))
+        else:
+            # Non-planted query: log as Remote System Discovery (T1018)
+            await neo4j_client.log_action(AttackerAction(
+                attacker_ip=query_info['source_ip'],
+                action_type='port_scan',
+                target_node_id='dns_layer',
+                detail=f'DNS lookup: {query_info["hostname"]} → {query_info["resolved_to"]}',
+                timestamp=query_info['timestamp'],
+                mitre_technique_id='T1018',
+                mitre_technique_name='Remote System Discovery'
+            ))
+
+    loop = asyncio.get_running_loop()
 
     interface = detect_network_interface()
     detector = ReconDetector(interface=interface, callback=on_recon_detected)
-    loop = asyncio.get_running_loop()
     detector.start(loop)
-    
+
+    dns_honeypot = init_dns_honeypot(interface_ip=interface, callback=on_dns_query)
+    dns_honeypot.start(loop)
+
     print("ShadowMesh backend online")
     yield
     # Shutdown
     detector.stop()
+    dns_honeypot.stop()
     from backend.deception import container_manager
     await container_manager.teardown_all()
     await neo4j_client.close()

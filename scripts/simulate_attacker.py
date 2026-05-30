@@ -1,16 +1,52 @@
 import time
 import socket
+import struct
 import requests
 import argparse
 import sys
 import random
 
+
 def print_step(msg):
     print(f"\n[*] {msg}")
+
 
 def sleep_msg(seconds, msg):
     print(f"    ... {msg}")
     time.sleep(seconds)
+
+
+def send_dns_query(hostname: str, dns_server: str = '127.0.0.1', port: int = 53, timeout: float = 1.0) -> bool:
+    """
+    Sends a minimal valid DNS A-record query via UDP.
+    Returns True if a response was received (honeypot replied), False otherwise.
+    """
+    try:
+        # Build a minimal DNS query packet manually (no external deps)
+        transaction_id = random.randint(1, 65535)
+        flags = 0x0100  # standard query, recursion desired
+        questions = 1
+        header = struct.pack('>HHHHHH', transaction_id, flags, questions, 0, 0, 0)
+
+        # Encode hostname as DNS labels (e.g. vault.corp.internal → \x05vault\x04corp\x08internal\x00)
+        labels = b''
+        for part in hostname.split('.'):
+            encoded = part.encode('ascii')
+            labels += bytes([len(encoded)]) + encoded
+        labels += b'\x00'  # root label
+
+        qtype = struct.pack('>H', 1)   # A record
+        qclass = struct.pack('>H', 1)  # IN class
+        packet = header + labels + qtype + qclass
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(timeout)
+        sock.sendto(packet, (dns_server, port))
+        sock.recvfrom(512)  # wait for honeypot response
+        sock.close()
+        return True
+    except Exception:
+        return False
 
 def main():
     parser = argparse.ArgumentParser(description="Simulate an APT attack against ShadowMesh.")
@@ -101,7 +137,6 @@ def main():
     print_step("Phase 5 — Credential Theft")
     print("    Found .env file — downloading...")
     try:
-        # Assuming teammate implemented /api/creds in Phase 4
         resp = requests.get(f"{BASE_URL}/api/creds/{first_node_id}/env_file", headers={"X-Forwarded-For": ATTACKER_IP})
         if resp.status_code == 200:
             print("    [CONTENT] " + resp.text[:200].replace("\n", " | "))
@@ -109,8 +144,23 @@ def main():
             print(f"    [Fallback] Credential endpoint returned {resp.status_code}")
     except Exception as e:
          print(f"    [Fallback] Could not reach creds endpoint: {e}")
-    
+
     sleep_msg(1, "Parsing credentials...")
+
+    print_step("Phase 5b — DNS Reconnaissance (populates DNS Intelligence panel)")
+    dns_queries = [
+        'internal-api.corp.internal',
+        'dev-gitlab.corp.internal',       # planted canary
+        'vault.corp.internal',            # planted canary
+        'finance-db.corp.internal',       # planted canary
+        'db-prod-01.corp.internal',
+        'ad-dc.corp.internal',            # planted canary
+    ]
+    for hostname in dns_queries:
+        print(f"    DNS lookup: {hostname}")
+        hit = send_dns_query(hostname)
+        print(f"    {'→ resolved (honeypot replied)' if hit else '→ no response (honeypot may not be running)'}")
+        time.sleep(0.4)
 
     print_step("Phase 6 — Canary Trigger")
     print("    Following internal wiki link...")
