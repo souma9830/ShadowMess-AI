@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import List, Tuple, Optional
 
 class ScanEvent(BaseModel):
     source_ip: str
@@ -38,7 +38,7 @@ class AttackerProfile(BaseModel):
 
 class TopologySnapshot(BaseModel):
     nodes: List[NetworkNode]
-    edges: List[tuple[str, str]]
+    edges: List[Tuple[str, str]]
     generation: int
 
 class FakeCredential(BaseModel):
