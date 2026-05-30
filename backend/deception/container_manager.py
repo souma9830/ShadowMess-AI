@@ -1,12 +1,12 @@
 """
-ShadowMesh — Task 9.5: Container Manager (Orchestrator Edition)
+ShadowMesh - Task 9.5: Container Manager (Orchestrator Edition)
 ================================================================
 The backend NO LONGER touches Docker directly.
 All container lifecycle operations are delegated to the orchestrator
 service via HTTP (httpx), which is the sole holder of the Docker socket.
 
 Architecture:
-  backend  ──httpx──►  orchestrator ──docker.sock──►  Docker daemon
+  backend  --httpx-->  orchestrator --docker.sock-->  Docker daemon
 
 Environment variables:
   ORCHESTRATOR_URL        URL of the orchestrator service (default: http://localhost:9000)
@@ -20,16 +20,17 @@ from typing import Dict, Optional
 
 import httpx
 
+from backend.events import EVENTS
 from backend.models import NetworkNode, TopologySnapshot
 from backend.deception.credentials import cred_manager
 from backend.deception.canary import canary_manager
 
 log = logging.getLogger("container_manager")
 
-ORCHESTRATOR_URL     = os.getenv("ORCHESTRATOR_URL", "http://localhost:9000")
+ORCHESTRATOR_URL      = os.getenv("ORCHESTRATOR_URL", "http://localhost:9000")
 HONEYPOT_CALLBACK_URL = os.getenv("HONEYPOT_CALLBACK_URL", "http://host.docker.internal:8000")
 
-# node_id → container_id tracking (in-process)
+# node_id -> container_id tracking (in-process)
 active_containers: Dict[str, str] = {}
 
 # HTTP client timeout: 30 s to allow slow image pulls
@@ -44,7 +45,10 @@ async def _orchestrator_request(method: str, path: str, **kwargs) -> Optional[di
     """
     Fire a single request to the orchestrator and return parsed JSON, or
     None if the orchestrator is unreachable / returns an error.
-    Never raises — always returns None on any failure.
+    Never raises -- always returns None on any failure.
+
+    Fix #18: Returns None for both network errors AND 4xx/5xx responses;
+    callers should log context before discarding None.
     """
     url = f"{ORCHESTRATOR_URL}{path}"
     try:
@@ -52,10 +56,11 @@ async def _orchestrator_request(method: str, path: str, **kwargs) -> Optional[di
             resp = await getattr(client, method)(url, **kwargs)
         if resp.status_code < 400:
             return resp.json()
-        log.error("[orchestrator] %s %s → %d: %s", method.upper(), url, resp.status_code, resp.text[:200])
+        log.error("[orchestrator] %s %s -> %d: %s",
+                  method.upper(), url, resp.status_code, resp.text[:200])
         return None
     except httpx.ConnectError:
-        log.error("[orchestrator] Unreachable at %s — is the orchestrator running?", ORCHESTRATOR_URL)
+        log.error("[orchestrator] Unreachable at %s -- is the orchestrator running?", ORCHESTRATOR_URL)
         return None
     except Exception as exc:
         log.error("[orchestrator] Request failed (%s %s): %s", method.upper(), url, exc)
@@ -93,7 +98,7 @@ async def spawn_container(node: NetworkNode, canary_url: str = "") -> Optional[s
     cid = result.get("container_id")
     if cid:
         active_containers[node.node_id] = cid
-        log.info("[spawn] ✓ %s (%s) → container %s", node.node_id, node.node_type, cid)
+        log.info("[spawn] OK %s (%s) -> container %s", node.node_id, node.node_type, cid)
     return cid
 
 
@@ -137,7 +142,7 @@ async def teardown_all() -> None:
     log.info("[teardown_all] Tearing down %d container(s): %s",
              len(active_containers), list(active_containers.keys()))
 
-    # Clear local state — even if orchestrator fails we don't want stale refs
+    # Clear local state -- even if orchestrator fails we don't want stale refs
     for node_id in list(active_containers.keys()):
         cred_manager.clear_for_node(node_id)
         canary_manager.clear_for_node(node_id)
@@ -147,7 +152,7 @@ async def teardown_all() -> None:
     if result:
         log.info("[teardown_all] Orchestrator stopped %d container(s).", result.get("stopped", "?"))
     else:
-        log.warning("[teardown_all] Orchestrator did not confirm teardown — containers may still be running.")
+        log.warning("[teardown_all] Orchestrator did not confirm teardown -- containers may still be running.")
 
 
 # ---------------------------------------------------------------------------
@@ -162,19 +167,23 @@ async def spawn_topology(topology: TopologySnapshot, sio) -> None:
       1. Tear down all previously active containers via orchestrator.
       2. Iterate topology.nodes and spawn a container for each.
       3. Stamp the returned container_id back onto the node.
-      4. Emit a 'container_spawned' Socket.IO event for each success.
+      4. Emit a CONTAINER_SPAWNED Socket.IO event for each attempt.
       5. Continue even if individual containers fail.
+
+    Fix #3: Credentials and canary tokens are generated AFTER a successful
+    spawn and cleaned up immediately on failure.
     """
     log.info("[topology] Deploying generation %d (%d nodes)",
              topology.generation, len(topology.nodes))
 
-    # Step 1 — clean slate
+    # Step 1 -- clean slate
     await teardown_all()
 
     # Steps 2, 3, 4
     for node in topology.nodes:
-        # Pre-generate credentials and canary tokens so URLs can be
-        # passed into the container environment at spawn time.
+        # Fix #3: Generate credentials and canary tokens before spawn so the
+        # canary URL can be injected into the container environment.
+        # If spawn fails we clean them up immediately below.
         cred_manager.generate_for_node(node.node_id)
         tokens = canary_manager.generate_for_node(node.node_id)
         wiki_token = next((t for t in tokens if t.token_type == "url"), None)
@@ -183,11 +192,16 @@ async def spawn_topology(topology: TopologySnapshot, sio) -> None:
         cid = await spawn_container(node, canary_url=canary_url)
         if cid:
             node.container_id = cid
+        else:
+            # Spawn failed -- clean up orphaned credentials and canary tokens immediately
+            cred_manager.clear_for_node(node.node_id)
+            canary_manager.clear_for_node(node.node_id)
 
         # Emit regardless of success so the frontend always gets a node event
+        # Fix #16: Use EVENTS constant instead of the bare 'container_spawned' literal
         if sio is not None:
             try:
-                await sio.emit("container_spawned", {
+                await sio.emit(EVENTS['CONTAINER_SPAWNED'], {
                     "node_id":      node.node_id,
                     "node_type":    node.node_type,
                     "container_id": node.container_id,
@@ -196,5 +210,5 @@ async def spawn_topology(topology: TopologySnapshot, sio) -> None:
                 log.warning("[topology] Socket.IO emit failed for %s: %s", node.node_id, exc)
 
     spawned = sum(1 for n in topology.nodes if n.container_id)
-    log.info("[topology] Deployment complete — %d/%d containers active.",
+    log.info("[topology] Deployment complete -- %d/%d containers active.",
              spawned, len(topology.nodes))

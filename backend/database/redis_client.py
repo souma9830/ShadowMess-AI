@@ -10,6 +10,15 @@ TTL_SESSION = 86400  # 24 hours
 redis_conn = redis.from_url(REDIS_URL, decode_responses=True)
 
 class RedisClient:
+    async def health_check(self) -> bool:
+        """Fix #17: Verify Redis connection at startup instead of failing silently on first op."""
+        try:
+            await redis_conn.ping()
+            return True
+        except Exception as e:
+            print(f"[Redis] Health check failed: {e}")
+            return False
+
     async def save_action(self, ip: str, action: AttackerAction):
         try:
             key = f"session:actions:{ip}"
@@ -68,6 +77,10 @@ class RedisClient:
         return actions_map, profiles_map, topology
 
     async def close(self):
-        await redis_conn.close()
+        # Use aclose() for redis-py >= 5.x compatibility
+        try:
+            await redis_conn.aclose()
+        except Exception:
+            await redis_conn.close()
 
 redis_client = RedisClient()

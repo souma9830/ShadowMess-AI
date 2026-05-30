@@ -98,16 +98,30 @@ class ReconDetector:
             if self._loop and self._loop.is_running():
                 asyncio.run_coroutine_threadsafe(self.callback(event), self._loop)
 
-    def start(self, loop: asyncio.AbstractEventLoop):
+    def start(self, loop: asyncio.AbstractEventLoop, sio=None):
+        """Start the packet sniffer.  sio is used to emit an alert if detection fails."""
         self._loop = loop
         self._running = True
 
-        # Validate interface exists before starting — prevents silent Scapy failure
+        # Fix #10: Validate interface and emit a dashboard alert if detection is disabled.
+        # Previously this printed a warning but the dashboard showed no indication.
         try:
             available = get_if_list()
             if self.interface not in available:
-                print(f'[Scanner] WARNING: Interface {self.interface!r} not in available list: {available}')
-                print('[Scanner] Scapy detection disabled. Fix NETWORK_INTERFACE in .env')
+                print(f'[Scanner] Interface {self.interface!r} not available — Scapy detection DISABLED.')
+                print('[Scanner] Fix NETWORK_INTERFACE in .env')
+                self._running = False
+                if sio and loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        sio.emit('alert', {
+                            'message': (
+                                f'Network detection disabled: interface {self.interface!r} not found. '
+                                'Check NETWORK_INTERFACE env var.'
+                            ),
+                            'severity': 'warning'
+                        }),
+                        loop
+                    )
                 return
         except Exception:
             pass
@@ -119,6 +133,7 @@ class ReconDetector:
         )
         thread.start()
         print(f'[Scapy] Detector listening on {self.interface}')
+
 
     def stop(self):
         self._running = False

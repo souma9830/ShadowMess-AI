@@ -1,4 +1,6 @@
 import asyncio
+import ipaddress
+import logging
 import time
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse, HTMLResponse
@@ -17,6 +19,15 @@ from backend.ai.anomaly_detector import anomaly_detector
 from backend.deception.credentials import cred_manager
 from backend.deception.canary import canary_manager
 from backend.database.redis_client import redis_client
+
+log = logging.getLogger("routes")
+
+# Per-IP action list cap — prevents unbounded memory growth (Issue #5)
+_ACTION_LIST_MAX = 1000
+_ACTION_LIST_TRIM = 500
+
+# Groq profiling rate-limit: run every N actions per IP
+_PROFILING_EVERY_N_ACTIONS = 3
 
 router = APIRouter()
 
@@ -106,8 +117,8 @@ async def _run_profiling_pipeline(action: AttackerAction, actions_for_ip: list):
 
     ip = action.attacker_ip
 
-    # Rate limit Groq profiling to every 3 actions per IP
-    if len(actions_for_ip) % 3 != 0:
+    # Rate limit Groq profiling to every N actions per IP (configurable via _PROFILING_EVERY_N_ACTIONS)
+    if len(actions_for_ip) % _PROFILING_EVERY_N_ACTIONS != 0:
         return
 
     # --- AI Profiling (Groq or local heuristic) ---
@@ -192,13 +203,15 @@ async def attacker_action(action: AttackerAction):
     # 3. Log to Neo4j
     await neo4j_client.log_action(action)
 
-    # 4. Append to in-memory list inside lock
+    # 4. Append to in-memory list inside lock — cap to prevent memory leak (Issue #5)
     async with state_lock:
         attacker_actions[action.attacker_ip].append(action)
+        if len(attacker_actions[action.attacker_ip]) > _ACTION_LIST_MAX:
+            attacker_actions[action.attacker_ip] = attacker_actions[action.attacker_ip][-_ACTION_LIST_TRIM:]
         _event_sequence += 1
         sequence = _event_sequence
         actions_snapshot = list(attacker_actions[action.attacker_ip])
-        
+
     await redis_client.save_action(action.attacker_ip, action)
 
     if sio:
@@ -207,19 +220,22 @@ async def attacker_action(action: AttackerAction):
         await sio.emit(EVENTS['ATTACKER_ACTION'], payload)
 
     # 5. Check for fingerprinting and trigger mutation if detected
+    # Fix #1: Update state BEFORE spawning containers to prevent stale topology reads
     if detect_fingerprinting(action):
         async with state_lock:
             topo_snapshot = current_topology.model_copy(deep=True)
         new_topology = await trigger_mutation(sio, topo_snapshot)
-        await spawn_topology(new_topology, sio)
+        # Update in-memory state FIRST — any concurrent reader gets the new topology
         async with state_lock:
             current_topology = new_topology
             _event_sequence += 1
         await redis_client.save_topology(new_topology)
+        # Spawn containers AFTER state is consistent
+        await spawn_topology(new_topology, sio)
         asyncio.create_task(slack.alert_topology_mutated(new_topology.generation))
         return {"status": "mutated"}
 
-    # 6. Run MITRE + profiling + lure pipeline in background — never blocks response
+    # 6. Run profiling + lure pipeline in background — rate-limited, never blocks response
     asyncio.create_task(_run_profiling_pipeline(action, actions_snapshot))
 
     return {"status": "logged"}
@@ -281,10 +297,16 @@ async def download_credential(node_id: str, cred_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Credential not found")
 
     cred_manager.mark_accessed(cred.cred_id)
-    
-    attacker_ip = request.headers.get("X-Forwarded-For") or request.client.host
-    
-    # Log the theft
+
+    # Fix #19: Validate and sanitize attacker IP — X-Forwarded-For can be spoofed/injected
+    raw_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.client.host
+    try:
+        attacker_ip = str(ipaddress.ip_address(raw_ip))
+    except ValueError:
+        attacker_ip = request.client.host or "unknown"
+
+    # Fix #2: Bypass the full attacker_action() pipeline for internal events to break
+    # the potential recursion: credential_theft → mutation → spawn → credentials → theft
     action = AttackerAction(
         attacker_ip=attacker_ip,
         action_type="credential_theft",
@@ -292,9 +314,14 @@ async def download_credential(node_id: str, cred_id: str, request: Request):
         detail=f"Stolen credential: {cred.filename}",
         timestamp=time.time()
     )
-    
-    # Process action through existing pipeline in background
-    asyncio.create_task(attacker_action(action))
+    # Write directly — no fingerprinting check, no profiling pipeline, no mutation risk
+    async with state_lock:
+        attacker_actions[attacker_ip].append(action)
+        if len(attacker_actions[attacker_ip]) > _ACTION_LIST_MAX:
+            attacker_actions[attacker_ip] = attacker_actions[attacker_ip][-_ACTION_LIST_TRIM:]
+        _event_sequence += 1
+    asyncio.create_task(neo4j_client.log_action(action))
+    asyncio.create_task(redis_client.save_action(attacker_ip, action))
     
     if sio:
         try:
@@ -305,18 +332,17 @@ async def download_credential(node_id: str, cred_id: str, request: Request):
                 "attacker_ip": attacker_ip,
                 "accessed_at": cred.accessed_at
             })
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("[credential] Socket.IO emit failed: %s", e)
             
     try:
-        if hasattr(slack, 'alert_credential_stolen'):
-            asyncio.create_task(slack.alert_credential_stolen(
-                attacker_ip=attacker_ip,
-                filename=cred.filename,
-                cred_type=cred.cred_type
-            ))
-    except Exception:
-        pass
+        asyncio.create_task(slack.alert_credential_stolen(
+            attacker_ip=attacker_ip,
+            filename=cred.filename,
+            cred_type=cred.cred_type
+        ))
+    except Exception as e:
+        log.warning("[credential] Slack alert task failed: %s", e)
         
     return PlainTextResponse(
         content=cred.content,
@@ -330,7 +356,12 @@ async def trigger_canary(token_id: str, request: Request):
     if not token:
         raise HTTPException(status_code=404, detail="Not found")
 
-    attacker_ip = request.headers.get("X-Forwarded-For") or request.client.host
+    # Fix #19: Validate attacker IP from X-Forwarded-For
+    raw_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.client.host
+    try:
+        attacker_ip = str(ipaddress.ip_address(raw_ip))
+    except ValueError:
+        attacker_ip = request.client.host or "unknown"
     canary_manager.mark_triggered(token_id, attacker_ip)
 
     if sio:
@@ -341,9 +372,10 @@ async def trigger_canary(token_id: str, request: Request):
                 "node_id": token.node_id,
                 "triggered_by_ip": attacker_ip,
             })
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("[canary] Socket.IO emit failed: %s", e)
 
+    # Fix #2: Bypass full pipeline for canary events (same recursion risk as credential_theft)
     action = AttackerAction(
         attacker_ip=attacker_ip,
         action_type="canary_trigger",
@@ -351,12 +383,18 @@ async def trigger_canary(token_id: str, request: Request):
         detail=f"Canary accessed: {token.label}",
         timestamp=time.time(),
     )
-    asyncio.create_task(attacker_action(action))
+    async with state_lock:
+        attacker_actions[attacker_ip].append(action)
+        if len(attacker_actions[attacker_ip]) > _ACTION_LIST_MAX:
+            attacker_actions[attacker_ip] = attacker_actions[attacker_ip][-_ACTION_LIST_TRIM:]
+        _event_sequence += 1
+    asyncio.create_task(neo4j_client.log_action(action))
+    asyncio.create_task(redis_client.save_action(attacker_ip, action))
 
     try:
         asyncio.create_task(slack.alert_canary_triggered(attacker_ip, token.label, token.node_id))
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("[canary] Slack alert task failed: %s", e)
 
     return HTMLResponse(
         content="<html><body>403 Forbidden — Access Denied</body></html>",
@@ -374,12 +412,14 @@ async def get_dns_queries():
 async def _do_mutate():
     """Background task: use Phase 3 mutator to reshuffle topology and broadcast."""
     global current_topology
-    new_topology = await trigger_mutation(sio, current_topology)
-    await spawn_topology(new_topology, sio)
+    async with state_lock:
+        topo_snapshot = current_topology.model_copy(deep=True)
+    new_topology = await trigger_mutation(sio, topo_snapshot)
+    # Fix #1: Update state BEFORE spawning containers
     async with state_lock:
         current_topology = new_topology
     await redis_client.save_topology(new_topology)
-    # Slack alert for topology mutation
+    await spawn_topology(new_topology, sio)
     asyncio.create_task(slack.alert_topology_mutated(new_topology.generation))
 
 @router.post("/topology/mutate")

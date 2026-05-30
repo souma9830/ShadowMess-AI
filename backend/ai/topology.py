@@ -96,6 +96,12 @@ async def mutate_topology(current: TopologySnapshot) -> TopologySnapshot:
     
     # 2. Select retained nodes randomly
     retained_nodes = random.sample(current.nodes, k=num_retained)
+
+    # Fix #6: Clear stale container_id on retained nodes.
+    # spawn_topology() calls teardown_all() first, so these containers are already
+    # destroyed. Keeping the old ID causes container tracking to point at dead containers.
+    for node in retained_nodes:
+        node.container_id = None
     
     # 3. Determine new target node count (9 to 14)
     target_count = random.randint(9, 14)

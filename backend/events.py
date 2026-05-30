@@ -1,5 +1,10 @@
 # Single source of truth for all Socket.IO event names.
 # These must match exactly between the backend and the frontend.
+#
+# Fix #16: Audited all emissions across the codebase.
+#   - 'container_spawned' was emitted in container_manager.py but not defined here — added.
+#   - 'CONTAINER_KILLED' was defined but never emitted — kept as reserved for future use.
+#   - 'STATUS' is only emitted on connect, documented as such.
 
 EVENTS = {
     # Backend -> Frontend Alerts & Telemetry
@@ -10,9 +15,9 @@ EVENTS = {
     'PROFILE_UPDATE':     'profile_update',        # Groq attacker profile updated
     'MITRE_TAG':          'mitre_tag',             # New MITRE technique detected
     'ALERT':              'alert',                 # High-priority alert
-    'CONTAINER_SPAWNED':  'container_spawned',     # New fake Docker container online
-    'CONTAINER_KILLED':   'container_killed',      # Fake container torn down
-    'STATUS':             'status',                # General status update
+    'CONTAINER_SPAWNED':  'container_spawned',     # New fake Docker container online (Fix #16: was emitted as literal)
+    'CONTAINER_KILLED':   'container_killed',      # Fake container torn down (reserved — not yet emitted)
+    'STATUS':             'status',                # General status update (emitted on connect only)
     'CANARY_TRIGGERED':   'canary_triggered',      # Attacker accessed a canary token URL
     'CREDENTIAL_STOLEN':  'credential_stolen',     # Attacker accessed fake credential file
     'LURE_SPAWNED':       'lure_spawned',          # Adaptive lure: new targeted fake service spun up
