@@ -3,7 +3,7 @@ import ipaddress
 import logging
 import time
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import PlainTextResponse, HTMLResponse
+from fastapi.responses import PlainTextResponse, HTMLResponse, Response
 from collections import defaultdict
 from backend.models import ScanEvent, AttackerAction, TopologySnapshot, AttackerProfile
 from backend.database.neo4j_client import neo4j_client
@@ -19,12 +19,15 @@ from backend.ai.anomaly_detector import anomaly_detector
 from backend.deception.credentials import cred_manager
 from backend.deception.canary import canary_manager
 from backend.database.redis_client import redis_client
+from backend.intelligence.stix_exporter import generate_stix_bundle
+from backend.intelligence.pdf_report import generate_pdf_report
 
 log = logging.getLogger("routes")
 
 # Per-IP action list cap — prevents unbounded memory growth (Issue #5)
 _ACTION_LIST_MAX = 1000
 _ACTION_LIST_TRIM = 500
+_MAX_TRACKED_IPS = 1000
 
 # Groq profiling rate-limit: run every N actions per IP
 _PROFILING_EVERY_N_ACTIONS = 3
@@ -35,6 +38,7 @@ router = APIRouter()
 state_lock = asyncio.Lock()
 _event_sequence: int = 0
 _deception_activated: bool = False  # prevents double topology generation race
+_topology_spawning: bool = False
 current_topology = TopologySnapshot(nodes=[], edges=[], generation=0)
 attacker_profiles = {}
 attacker_actions = defaultdict(list)
@@ -149,18 +153,24 @@ async def _run_profiling_pipeline(action: AttackerAction, actions_for_ip: list):
             # Deep copy so lure spawning works on a stable snapshot even if
             # current_topology is replaced by a mutation during the await below.
             topo_snapshot = current_topology.model_copy(deep=True)
+            topo_id = id(current_topology)  # Track which topology we're working with
 
         lure_node = await maybe_spawn_lure(profile, topo_snapshot, sio, topo_snapshot.generation)
         if lure_node:
             async with state_lock:
-                current_topology.nodes.append(lure_node)
+                # Only append if topology hasn't been replaced by a mutation
+                if id(current_topology) == topo_id:
+                    current_topology.nodes.append(lure_node)
+                else:
+                    # Topology was mutated; add lure to new topology instead
+                    current_topology.nodes.append(lure_node)
                 _event_sequence += 1
                 payload = current_topology.model_dump()
                 payload['sequence'] = _event_sequence
                 topo_to_save = current_topology.model_copy(deep=True)
-            
+
             await redis_client.save_topology(topo_to_save)
-                
+
             if sio:
                 await sio.emit(EVENTS['TOPOLOGY_UPDATE'], payload)
 
@@ -208,6 +218,13 @@ async def attacker_action(action: AttackerAction):
         attacker_actions[action.attacker_ip].append(action)
         if len(attacker_actions[action.attacker_ip]) > _ACTION_LIST_MAX:
             attacker_actions[action.attacker_ip] = attacker_actions[action.attacker_ip][-_ACTION_LIST_TRIM:]
+            
+        if len(attacker_actions) > _MAX_TRACKED_IPS:
+            oldest_ip = min(attacker_actions.keys(),
+                           key=lambda ip: attacker_actions[ip][0].timestamp)
+            del attacker_actions[oldest_ip]
+            attacker_profiles.pop(oldest_ip, None)
+            
         _event_sequence += 1
         sequence = _event_sequence
         actions_snapshot = list(attacker_actions[action.attacker_ip])
@@ -217,23 +234,33 @@ async def attacker_action(action: AttackerAction):
     if sio:
         payload = action.model_dump()
         payload['sequence'] = sequence
+        payload['attacker_ip'] = action.attacker_ip
         await sio.emit(EVENTS['ATTACKER_ACTION'], payload)
 
     # 5. Check for fingerprinting and trigger mutation if detected
     # Fix #1: Update state BEFORE spawning containers to prevent stale topology reads
+    global _topology_spawning
     if detect_fingerprinting(action):
         async with state_lock:
+            if _topology_spawning:
+                return {"status": "mutation_in_progress"}
+            _topology_spawning = True
             topo_snapshot = current_topology.model_copy(deep=True)
-        new_topology = await trigger_mutation(sio, topo_snapshot)
-        # Update in-memory state FIRST — any concurrent reader gets the new topology
-        async with state_lock:
-            current_topology = new_topology
-            _event_sequence += 1
-        await redis_client.save_topology(new_topology)
-        # Spawn containers AFTER state is consistent
-        await spawn_topology(new_topology, sio)
-        asyncio.create_task(slack.alert_topology_mutated(new_topology.generation))
-        return {"status": "mutated"}
+
+        try:
+            new_topology = await trigger_mutation(sio, topo_snapshot)
+            await spawn_topology(new_topology, sio)
+            async with state_lock:
+                current_topology = new_topology
+                _event_sequence += 1
+                _topology_spawning = False
+            await redis_client.save_topology(new_topology)
+            asyncio.create_task(slack.alert_topology_mutated(new_topology.generation))
+            return {"status": "mutated"}
+        except Exception:
+            async with state_lock:
+                _topology_spawning = False
+            raise
 
     # 6. Run profiling + lure pipeline in background — rate-limited, never blocks response
     asyncio.create_task(_run_profiling_pipeline(action, actions_snapshot))
@@ -411,13 +438,14 @@ async def get_dns_queries():
 
 async def _do_mutate():
     """Background task: use Phase 3 mutator to reshuffle topology and broadcast."""
-    global current_topology
+    global current_topology, _event_sequence
     async with state_lock:
         topo_snapshot = current_topology.model_copy(deep=True)
     new_topology = await trigger_mutation(sio, topo_snapshot)
     # Fix #1: Update state BEFORE spawning containers
     async with state_lock:
         current_topology = new_topology
+        _event_sequence += 1
     await redis_client.save_topology(new_topology)
     await spawn_topology(new_topology, sio)
     asyncio.create_task(slack.alert_topology_mutated(new_topology.generation))
@@ -426,3 +454,22 @@ async def _do_mutate():
 async def mutate_topology():
     asyncio.create_task(_do_mutate())
     return {"status": "mutating", "generation": current_topology.generation}
+
+@router.get("/export/stix/{attacker_ip}")
+async def export_stix(attacker_ip: str):
+    profile = attacker_profiles.get(attacker_ip)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    actions = attacker_actions.get(attacker_ip, [])
+    bundle = generate_stix_bundle(attacker_ip, profile, actions)
+    return bundle
+
+@router.get("/export/report/{attacker_ip}")
+async def export_report(attacker_ip: str):
+    profile = attacker_profiles.get(attacker_ip)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    actions = attacker_actions.get(attacker_ip, [])
+    pdf_bytes = generate_pdf_report(attacker_ip, profile, actions, {})
+    return Response(content=pdf_bytes, media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename=shadowmesh_report_{attacker_ip}.pdf"})
+

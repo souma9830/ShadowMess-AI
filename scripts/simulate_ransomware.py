@@ -104,7 +104,7 @@ def main():
         "timestamp": time.time()
     })
 
-    print("\n[✔] Ransomware Simulation complete. Check the ShadowMesh Dashboard to see the AI Profiler map these tactics!")
+    print("\n[OK] Ransomware Simulation complete!")
 
 if __name__ == "__main__":
     main()

@@ -16,3 +16,5 @@ redis==5.0.4
 scikit-learn==1.4.2
 numpy==1.26.4
 dnslib==0.9.24
+stix2==3.0.1
+fpdf2==2.7.9

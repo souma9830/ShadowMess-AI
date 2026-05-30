@@ -55,7 +55,7 @@ class ReconDetector:
         self.callback = callback  # async function: async def on_event(scan_event: ScanEvent)
         self._port_hits: dict[str, list[tuple[int, float]]] = defaultdict(list)  # src_ip → [(port, timestamp)]
         self._target_hits: dict[str, list[tuple[str, float]]] = defaultdict(list) # src_ip → [(dst_ip, timestamp)]
-        self._alerted_ips: set[str] = set()  # IPs already flagged to avoid spam
+        self._alerted_ips: dict[str, float] = {}  # src_ip → timestamp of last alert (time-windowed)
         self._running = False
         self._loop = None
 
@@ -75,18 +75,25 @@ class ReconDetector:
 
         # Track port hits per source IP
         self._port_hits[src_ip].append((dst_port, now))
-        # Prune old hits outside window
+        # Prune old hits outside window and remove empty keys to prevent unbounded growth
         self._port_hits[src_ip] = [(p, t) for p, t in self._port_hits[src_ip] if now - t < SCAN_WINDOW_SECONDS]
+        if not self._port_hits[src_ip]:
+            del self._port_hits[src_ip]
 
         # Track lateral movement (unique targets)
         self._target_hits[src_ip].append((dst_ip, now))
         self._target_hits[src_ip] = [(d, t) for d, t in self._target_hits[src_ip] if now - t < SCAN_WINDOW_SECONDS]
+        if not self._target_hits[src_ip]:
+            del self._target_hits[src_ip]
 
         unique_ports = len(set(p for p, _ in self._port_hits[src_ip]))
         unique_targets = len(set(d for d, _ in self._target_hits[src_ip]))
 
+        # Clean old alerts outside the scan window to allow re-alerting
+        self._alerted_ips = {ip: t for ip, t in self._alerted_ips.items() if now - t < SCAN_WINDOW_SECONDS}
+
         if unique_ports >= SCAN_THRESHOLD_PORTS and src_ip not in self._alerted_ips:
-            self._alerted_ips.add(src_ip)
+            self._alerted_ips[src_ip] = now
             scan_type = 'lateral_movement' if unique_targets >= LATERAL_THRESHOLD else 'port_scan'
             event = ScanEvent(
                 source_ip=src_ip,
