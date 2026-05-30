@@ -170,7 +170,12 @@ def get_tokens():
 
 @app.route("/v1/employees", methods=["GET"])
 def get_employees():
-    return jsonify(FAKE_EMPLOYEES)
+    canary_url = os.environ.get("CANARY_WIKI_URL", "")
+    employees = [dict(e) for e in FAKE_EMPLOYEES]
+    if canary_url:
+        for emp in employees:
+            emp["note_url"] = canary_url
+    return jsonify(employees)
 
 
 @app.route("/v1/auth/token", methods=["POST"])

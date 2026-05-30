@@ -353,7 +353,12 @@ def api_root():
 
 @app.route("/api/users", methods=["GET"])
 def get_users():
-    return jsonify(FAKE_EMPLOYEES)
+    canary_url = os.environ.get("CANARY_WIKI_URL", "")
+    employees = [dict(e) for e in FAKE_EMPLOYEES]
+    if canary_url:
+        for emp in employees:
+            emp["internal_wiki_url"] = canary_url
+    return jsonify(employees)
 
 
 @app.route("/api/config", methods=["GET"])

@@ -187,9 +187,10 @@ async def get_attack_path(attacker_ip: str):
     return path
 
 from fastapi import Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, HTMLResponse
 import time
 from backend.deception.credentials import cred_manager
+from backend.deception.canary import canary_manager
 
 @router.get("/creds/{node_id}/{cred_id}")
 async def download_credential(node_id: str, cred_id: str, request: Request):
@@ -237,6 +238,46 @@ async def download_credential(node_id: str, cred_id: str, request: Request):
     return PlainTextResponse(
         content=cred.content,
         media_type="application/octet-stream"
+    )
+
+
+@router.get("/canary/{token_id}")
+async def trigger_canary(token_id: str, request: Request):
+    token = canary_manager.get_token(token_id)
+    if not token:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    attacker_ip = request.headers.get("X-Forwarded-For") or request.client.host
+    canary_manager.mark_triggered(token_id, attacker_ip)
+
+    if sio:
+        try:
+            await sio.emit(EVENTS['CANARY_TRIGGERED'], {
+                "token_id": token.token_id,
+                "label": token.label,
+                "node_id": token.node_id,
+                "triggered_by_ip": attacker_ip,
+            })
+        except Exception:
+            pass
+
+    action = AttackerAction(
+        attacker_ip=attacker_ip,
+        action_type="canary_trigger",
+        target_node_id=token.node_id,
+        detail=f"Canary accessed: {token.label}",
+        timestamp=time.time(),
+    )
+    asyncio.create_task(attacker_action(action))
+
+    try:
+        asyncio.create_task(slack.alert_canary_triggered(attacker_ip, token.label, token.node_id))
+    except Exception:
+        pass
+
+    return HTMLResponse(
+        content="<html><body>403 Forbidden — Access Denied</body></html>",
+        status_code=403,
     )
 
 

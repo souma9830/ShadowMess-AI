@@ -26,6 +26,8 @@ import logging
 from typing import Dict, Optional
 
 from backend.models import NetworkNode, TopologySnapshot
+from backend.deception.credentials import cred_manager
+from backend.deception.canary import canary_manager
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -77,7 +79,7 @@ active_containers: Dict[str, str] = {}
 # ---------------------------------------------------------------------------
 # Function 1: spawn_container
 # ---------------------------------------------------------------------------
-async def spawn_container(node: NetworkNode) -> Optional[str]:
+async def spawn_container(node: NetworkNode, canary_url: str = "") -> Optional[str]:
     """
     Spawn a single honeypot container for the given topology node.
 
@@ -124,6 +126,7 @@ async def spawn_container(node: NetworkNode) -> Optional[str]:
                 environment={
                     "NODE_ID": node.node_id,
                     "ATTACKER_CALLBACK_URL": "http://host.docker.internal:8000",
+                    "CANARY_WIKI_URL": canary_url,
                 },
                 mem_limit="64m",
                 cpu_period=100000,
@@ -226,7 +229,13 @@ async def spawn_topology(topology: TopologySnapshot, sio) -> None:
 
     # Step 2 & 3 — spawn each node
     for node in topology.nodes:
-        cid = await spawn_container(node)
+        # Pre-generate canary tokens so the URL can be injected into the container env
+        cred_manager.generate_for_node(node.node_id)
+        tokens = canary_manager.generate_for_node(node.node_id)
+        wiki_token = next((t for t in tokens if t.token_type == "url"), None)
+        canary_url = wiki_token.token_url if wiki_token else ""
+
+        cid = await spawn_container(node, canary_url=canary_url)
 
         if cid:
             node.container_id = cid
