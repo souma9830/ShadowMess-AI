@@ -23,7 +23,6 @@ from backend.intelligence.stix_exporter import generate_stix_bundle
 from backend.intelligence.pdf_report import generate_pdf_report
 
 log = logging.getLogger("routes")
-
 # Per-IP action list cap — prevents unbounded memory growth (Issue #5)
 _ACTION_LIST_MAX = 1000
 _ACTION_LIST_TRIM = 500
@@ -117,7 +116,7 @@ async def _run_profiling_pipeline(action: AttackerAction, actions_for_ip: list):
     Background task: runs attacker profiling and adaptive lure
     spawning — decoupled from the hot request path.
     """
-    global attacker_profiles, current_topology
+    global attacker_profiles, current_topology, _event_sequence
 
     ip = action.attacker_ip
 
@@ -314,6 +313,7 @@ async def get_attack_path(attacker_ip: str):
 
 @router.get("/creds/{node_id}/{cred_id}")
 async def download_credential(node_id: str, cred_id: str, request: Request):
+    global _event_sequence
     # Try by UUID first, then fall back to cred_type string
     # (honeypot containers embed /api/creds/{node_id}/{cred_type} in their responses)
     cred = cred_manager.get_credential(cred_id)
@@ -379,6 +379,7 @@ async def download_credential(node_id: str, cred_id: str, request: Request):
 
 @router.get("/canary/{token_id}")
 async def trigger_canary(token_id: str, request: Request):
+    global _event_sequence
     token = canary_manager.get_token(token_id)
     if not token:
         raise HTTPException(status_code=404, detail="Not found")
@@ -472,4 +473,70 @@ async def export_report(attacker_ip: str):
     actions = attacker_actions.get(attacker_ip, [])
     pdf_bytes = generate_pdf_report(attacker_ip, profile, actions, {})
     return Response(content=pdf_bytes, media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename=shadowmesh_report_{attacker_ip}.pdf"})
+
+
+@router.get("/docs/{token_id}/{filename}")
+async def download_decoy_doc(token_id: str, filename: str, request: Request):
+    """
+    Serve a generated decoy document.
+
+    Validates the token exists, matches the stored filename, then streams
+    the document bytes.  Every download fires a data_access event so the
+    backend knows the attacker found and retrieved the document.
+    """
+    global _event_sequence
+    from backend.deception.document_generator import doc_generator
+
+    # Validate token exists in canary registry
+    token = canary_manager.get_token(token_id)
+    if not token:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    entry = doc_generator.get_document(token_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # Validate filename matches stored value — prevents path traversal
+    if entry.filename != filename:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # Capture attacker IP
+    raw_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.client.host
+    try:
+        attacker_ip = str(ipaddress.ip_address(raw_ip))
+    except ValueError:
+        attacker_ip = request.client.host or "unknown"
+
+    # Fire data_access event — document download is high-value intelligence
+    action = AttackerAction(
+        attacker_ip    = attacker_ip,
+        action_type    = "data_access",
+        target_node_id = token.node_id,
+        detail         = f"Decoy document downloaded: {filename}",
+        timestamp      = time.time(),
+    )
+    async with state_lock:
+        attacker_actions[attacker_ip].append(action)
+        if len(attacker_actions[attacker_ip]) > _ACTION_LIST_MAX:
+            attacker_actions[attacker_ip] = attacker_actions[attacker_ip][-_ACTION_LIST_TRIM:]
+        _event_sequence += 1
+    asyncio.create_task(neo4j_client.log_action(action))
+    asyncio.create_task(redis_client.save_action(attacker_ip, action))
+
+    if sio:
+        try:
+            await sio.emit(EVENTS['ATTACKER_ACTION'], {
+                **action.model_dump(),
+                "sequence": _event_sequence,
+            })
+        except Exception as exc:
+            log.warning("[docs] Socket.IO emit failed: %s", exc)
+
+    log.info("[docs] %s downloaded %s (token %s)", attacker_ip, filename, token_id)
+
+    return Response(
+        content=entry.data,
+        media_type=entry.mime,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 

@@ -24,6 +24,11 @@ EVENTS = {
     'THREAT_SCORE':       'threat_score',          # ML anomaly score for attacker action
     'DNS_QUERY':          'dns_query',             # DNS query logged by honeypot
 
+    # Projection Sensor events (Tier-2 projected nodes — Task 11.3)
+    'PROJECTION_ARP_HIT':      'projection_arp_hit',      # ARP probe hit a projected IP
+    'PROJECTION_PORT_SCAN':    'projection_port_scan',    # TCP SYN to projected IP/port
+    'PROJECTION_SERVICE_PROBE':'projection_service_probe',# Known-service port probed on projected node
+
     # Frontend -> Backend Interactivity (Demo triggers)
     'TRIGGER_SCAN':       'trigger_scan',          # Manual scan simulation for demo
     'TRIGGER_LOGIN':      'trigger_login',         # Manual login attempt simulation

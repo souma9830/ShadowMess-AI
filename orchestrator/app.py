@@ -34,17 +34,28 @@ ALLOWED_IMAGES = {
     "shadowmesh-fake-api",
     "shadowmesh-fake-auth",
     "shadowmesh-fake-ssh",
+    "shadowmesh-fake-rdp",
+    # Task 11.4: Protocol honeypots
+    "shadowmesh-fake-smb",
+    "shadowmesh-fake-mqtt",
+    "shadowmesh-fake-redis",
+    "shadowmesh-fake-elasticsearch",
 }
 
 # node_type -> Docker image (mirrors container_manager.py mapping)
 IMAGE_MAP = {
-    "web_server":   "shadowmesh-fake-http",
-    "db_server":    "shadowmesh-fake-db",
-    "auth_service": "shadowmesh-fake-auth",
-    "file_server":  "shadowmesh-fake-http",
-    "api_gateway":  "shadowmesh-fake-api",
-    "mail_server":  "shadowmesh-fake-http",
-    "workstation":  "shadowmesh-fake-http",
+    "web_server":          "shadowmesh-fake-http",
+    "db_server":           "shadowmesh-fake-db",
+    "auth_service":        "shadowmesh-fake-auth",
+    "file_server":         "shadowmesh-fake-smb",
+    "api_gateway":         "shadowmesh-fake-api",
+    "mail_server":         "shadowmesh-fake-http",
+    "workstation":         "shadowmesh-fake-rdp",
+    # Task 11.4: new node types
+    "smb_server":          "shadowmesh-fake-smb",
+    "mqtt_broker":         "shadowmesh-fake-mqtt",
+    "redis_server":        "shadowmesh-fake-redis",
+    "elasticsearch_node":  "shadowmesh-fake-elasticsearch",
 }
 
 DOCKER_NETWORK = os.getenv("DECEPTION_NETWORK", "shadowmesh_deception_net")
