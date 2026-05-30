@@ -66,6 +66,34 @@ async def get_attacker_profile(attacker_ip: str):
         raise HTTPException(status_code=404, detail="Profile not found")
     return profile
 
+@router.get("/attackers")
+async def get_attackers():
+    sessions = []
+    for ip, actions in attacker_actions.items():
+        if not actions: continue
+        profile = attacker_profiles.get(ip)
+        
+        # safely extract skill level from either dict or AttackerProfile object
+        skill_level = 'Unknown'
+        if profile:
+            if isinstance(profile, dict):
+                skill_level = profile.get('skill_level', 'Unknown')
+            else:
+                skill_level = getattr(profile, 'skill_level', 'Unknown')
+                
+        sessions.append({
+            "ip": ip,
+            "action_count": len(actions),
+            "first_seen": actions[0].timestamp,
+            "last_seen": actions[-1].timestamp,
+            "skill_level": skill_level,
+        })
+    return sessions
+
+@router.get("/attacker/{ip}/actions")
+async def get_attacker_actions(ip: str):
+    return attacker_actions.get(ip, [])[-50:]
+
 @router.get("/neo4j/attack-path/{attacker_ip}")
 async def get_attack_path(attacker_ip: str):
     path = await neo4j_client.get_attack_path(attacker_ip)

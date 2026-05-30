@@ -5,18 +5,38 @@ import { useShallow } from 'zustand/react/shallow';
 import { motion } from 'framer-motion';
 
 export default function NetworkGraph() {
-  const { nodes, edges, isMutating, actions } = useShadowStore(
+  const { nodes, edges, isMutating, nodeHits, activeSessions } = useShadowStore(
     useShallow(state => ({
       nodes: state.nodes,
       edges: state.edges,
       isMutating: state.isMutating,
-      actions: state.actions,
+      nodeHits: state.nodeHits,
+      activeSessions: state.activeSessions,
     }))
   );
   const graphRef = useRef();
+  const prevPositions = useRef({});
   const [hoverNode, setHoverNode] = useState(null);
 
-  const graphData = {
+  // Map IPs to specific colors
+  const getAttackerGlowColor = (ip) => {
+    const sortedIps = activeSessions.map(s => s.ip).sort();
+    const index = sortedIps.indexOf(ip);
+    if (index === 0) return '#E24B4A'; // shadowRed
+    if (index === 1) return '#EF9F27'; // shadowAmber
+    return '#7F77DD'; // shadowPurple for 3+
+  };
+
+  // Snapshot positions before nodes update
+  useEffect(() => {
+    if (graphRef.current) {
+      graphRef.current.graphData().nodes.forEach(n => {
+        prevPositions.current[n.id] = { x: n.x, y: n.y, vx: n.vx, vy: n.vy };
+      });
+    }
+  }, [nodes]);
+
+  const graphData = React.useMemo(() => ({
     nodes: nodes.map(n => ({
       id: n.node_id,
       ip: n.ip,
@@ -24,10 +44,12 @@ export default function NetworkGraph() {
       ports: n.ports,
       banner: n.banner,
       os: n.os,
-      container_id: n.container_id
+      container_id: n.container_id,
+      // Restore previous x/y to prevent jarring jump on topology update
+      ...(prevPositions.current[n.node_id] || {})
     })),
     links: edges.map(([src, tgt]) => ({ source: src, target: tgt }))
-  };
+  }), [nodes, edges]);
 
   const getNodeColor = (nodeType) => {
     switch(nodeType) {
@@ -46,6 +68,7 @@ export default function NetworkGraph() {
     if (graphRef.current) {
       graphRef.current.d3AlphaDecay(isMutating ? 0.5 : 0.02);
       if (!isMutating) {
+        prevPositions.current = {};
         graphRef.current.d3ReheatSimulation();
       }
     }
@@ -86,16 +109,16 @@ export default function NetworkGraph() {
             ctx.fill();
           }}
           nodeCanvasObject={(node, ctx, globalScale) => {
-            const hasBeenHit = actions.some(a => a.target_node_id === node.id);
+            const hittingAttackerIp = nodeHits[node.id];
             const baseColor = getNodeColor(node.nodeType);
             
-            if (hasBeenHit) {
+            if (hittingAttackerIp) {
+              const glowColor = getAttackerGlowColor(hittingAttackerIp);
               ctx.beginPath();
               ctx.arc(node.x, node.y, 11, 0, 2 * Math.PI);
-              ctx.fillStyle = baseColor;
-              ctx.globalAlpha = 0.3;
-              ctx.fill();
-              ctx.globalAlpha = 1;
+              ctx.lineWidth = 2;
+              ctx.strokeStyle = glowColor;
+              ctx.stroke();
             }
 
             ctx.beginPath();
