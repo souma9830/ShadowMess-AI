@@ -138,10 +138,6 @@ async def maybe_spawn_lure(
                     'hint': lure_config['hint'],
                     'ip': lure_node.ip
                 })
-                await sio.emit(EVENTS['ALERT'], {
-                    'message': f"Adaptive lure deployed: {lure_config['hint']}",
-                    'severity': 'info'
-                })
             except Exception as sio_err:
                 log.warning("[lure] Socket.IO emit failed: %s", sio_err)
 

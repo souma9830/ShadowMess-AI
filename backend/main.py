@@ -200,6 +200,11 @@ async def lifespan(app: FastAPI):
     # Start orchestrator health monitor
     from backend.deception.container_manager import start_orchestrator_health_monitor
     asyncio.create_task(start_orchestrator_health_monitor(sio, loop))
+
+    # Phase 12.3: Load RL topology optimizer Q-table
+    from backend.ai.rl_topology import rl_optimizer
+    rl_optimizer.load()
+
     print("ShadowMesh backend online")
     yield
     # Shutdown
@@ -208,7 +213,11 @@ async def lifespan(app: FastAPI):
     sensor.stop()
     await container_manager.teardown_all()
     await neo4j_client.close()
-    
+
+    # Phase 12.3: Persist RL Q-table on shutdown
+    from backend.ai.rl_topology import rl_optimizer as _rl_opt
+    _rl_opt.save()
+
     from backend.database.redis_client import redis_client
     await redis_client.close()
 

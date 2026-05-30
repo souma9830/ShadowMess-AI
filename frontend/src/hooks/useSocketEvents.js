@@ -84,6 +84,18 @@ export function useSocketEvents() {
       useShadowStore.getState().setBreadcrumbs(data.active_count);
     });
 
+    socket.on(EVENTS.PROJECTION_ARP_HIT, (data) => {
+      useShadowStore.getState().addAlert(`Projection ARP hit: ${data.target_ip} from ${data.source_ip}`, 'info');
+    });
+
+    socket.on(EVENTS.PROJECTION_PORT_SCAN, (data) => {
+      useShadowStore.getState().addAlert(`Projection port scan: ${data.target_ip}:${data.ports_hit?.[0] || '?'} from ${data.source_ip}`, 'warning');
+    });
+
+    socket.on(EVENTS.PROJECTION_SERVICE_PROBE, (data) => {
+      useShadowStore.getState().addAlert(`Projection service probe: ${data.target_ip} from ${data.source_ip}`, 'warning');
+    });
+
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
@@ -101,6 +113,9 @@ export function useSocketEvents() {
       socket.off(EVENTS.THREAT_SCORE);
       socket.off(EVENTS.DNS_QUERY);
       socket.off(EVENTS.BREADCRUMB_UPDATE);
+      socket.off(EVENTS.PROJECTION_ARP_HIT);
+      socket.off(EVENTS.PROJECTION_PORT_SCAN);
+      socket.off(EVENTS.PROJECTION_SERVICE_PROBE);
     };
   }, []);
 

@@ -16,6 +16,9 @@ export const EVENTS = {
     THREAT_SCORE:       'threat_score',
     DNS_QUERY:          'dns_query',
     BREADCRUMB_UPDATE:  'breadcrumb_update',
+    PROJECTION_ARP_HIT:      'projection_arp_hit',
+    PROJECTION_PORT_SCAN:    'projection_port_scan',
+    PROJECTION_SERVICE_PROBE:'projection_service_probe',
     
     // Frontend → Backend
     TRIGGER_SCAN:       'trigger_scan',

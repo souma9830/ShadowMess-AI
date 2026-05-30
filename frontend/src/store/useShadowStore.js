@@ -77,17 +77,25 @@ export const useShadowStore = create((set, get) => ({
   
   setMutating: (bool) => set({ isMutating: bool }),
   
-  markCanaryTriggered: (token_id, triggered_by_ip) => set((state) => ({
-    canaryTokens: state.canaryTokens.map(t => 
-      t.token_id === token_id ? { ...t, triggered: true, triggered_at: Date.now(), triggered_by_ip } : t
-    )
-  })),
-  
-  markCredentialStolen: (cred_id, accessed_at) => set((state) => ({
-    stolenCredentials: state.stolenCredentials.map(c => 
-      c.cred_id === cred_id ? { ...c, accessed: true, accessed_at } : c
-    )
-  })),
+  markCanaryTriggered: (token_id, triggered_by_ip) => set((state) => {
+    const exists = state.canaryTokens.some(t => t.token_id === token_id);
+    if (exists) {
+      return { canaryTokens: state.canaryTokens.map(t =>
+        t.token_id === token_id ? { ...t, triggered: true, triggered_at: Date.now(), triggered_by_ip } : t
+      )};
+    }
+    return { canaryTokens: [...state.canaryTokens, { token_id, triggered: true, triggered_at: Date.now(), triggered_by_ip }] };
+  }),
+
+  markCredentialStolen: (cred_id, accessed_at) => set((state) => {
+    const exists = state.stolenCredentials.some(c => c.cred_id === cred_id);
+    if (exists) {
+      return { stolenCredentials: state.stolenCredentials.map(c =>
+        c.cred_id === cred_id ? { ...c, accessed: true, accessed_at } : c
+      )};
+    }
+    return { stolenCredentials: [...state.stolenCredentials, { cred_id, accessed: true, accessed_at }] };
+  }),
   
   setThreatScore: (ip, score, isAnomalous) => set((state) => ({
     threatScores: { ...state.threatScores, [ip]: { score, isAnomalous } }

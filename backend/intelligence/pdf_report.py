@@ -1,13 +1,20 @@
 import os
 from typing import List, Any
-from fpdf import FPDF
 from datetime import datetime
 from backend.models import AttackerAction
 
-class ShadowMeshReport(FPDF):
+try:
+    from fpdf import FPDF
+    _FPDF_AVAILABLE = True
+except ImportError:
+    _FPDF_AVAILABLE = False
+    FPDF = object
+
+
+class ShadowMeshReport(FPDF if _FPDF_AVAILABLE else object):
     def header(self):
         self.set_font('helvetica', 'B', 15)
-        self.set_text_color(226, 75, 74) # ShadowRed
+        self.set_text_color(226, 75, 74)
         self.cell(0, 10, 'ShadowMesh Threat Intelligence Report', border=False, align='C', new_x='LMARGIN', new_y='NEXT')
         self.ln(5)
 
@@ -18,6 +25,9 @@ class ShadowMeshReport(FPDF):
         self.cell(0, 10, f'Page {self.page_no()}', align='C')
 
 def generate_pdf_report(attacker_ip: str, profile: Any, actions: List[AttackerAction], threat_score: dict) -> bytes:
+    if not _FPDF_AVAILABLE:
+        return b"PDF generation unavailable - install fpdf2: pip install fpdf2"
+
     pdf = ShadowMeshReport()
     pdf.add_page()
 
