@@ -251,5 +251,51 @@ async def spawn_topology(topology: TopologySnapshot, sio) -> None:
 
     tier1 = sum(1 for n in topology.nodes if n.tier != "tier2" and n.container_id)
     tier2 = sum(1 for n in topology.nodes if n.tier == "tier2")
-    log.info("[topology] Deployment complete -- %d Tier-1 containers, %d Tier-2 projected.",
-             tier1, tier2)
+    spawned = sum(1 for n in topology.nodes if n.container_id)
+    log.info("[topology] Deployment complete -- %d/%d containers active (%d Tier-1, %d Tier-2 projected).",
+             spawned, len(topology.nodes), tier1, tier2)
+
+# ---------------------------------------------------------------------------
+# Function 5: Orchestrator Health Monitor
+# ---------------------------------------------------------------------------
+
+async def start_orchestrator_health_monitor(sio, loop):
+    """
+    Periodic health check for the orchestrator service.
+    Emits dashboard alerts if orchestrator becomes unreachable.
+    """
+    import asyncio
+
+    last_status = True  # Assume healthy at start
+    check_interval = 60  # Check every 60 seconds
+
+    while True:
+        await asyncio.sleep(check_interval)
+
+        result = await _orchestrator_request("get", "/health")
+        current_status = result is not None
+
+        # Alert on status change
+        if current_status != last_status:
+            if not current_status:
+                log.error("[health] Orchestrator UNREACHABLE — container spawning disabled")
+                if sio:
+                    try:
+                        await sio.emit('alert', {
+                            'message': 'Orchestrator unreachable — container spawning disabled. Check orchestrator service.',
+                            'severity': 'critical'
+                        })
+                    except Exception as e:
+                        log.warning("[health] Failed to emit alert: %s", e)
+            else:
+                log.info("[health] Orchestrator RECOVERED — container spawning restored")
+                if sio:
+                    try:
+                        await sio.emit('alert', {
+                            'message': 'Orchestrator connection restored — container spawning operational.',
+                            'severity': 'info'
+                        })
+                    except Exception as e:
+                        log.warning("[health] Failed to emit alert: %s", e)
+
+        last_status = current_status

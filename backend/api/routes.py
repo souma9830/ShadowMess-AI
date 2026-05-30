@@ -326,11 +326,14 @@ async def download_credential(node_id: str, cred_id: str, request: Request):
     cred_manager.mark_accessed(cred.cred_id)
 
     # Fix #19: Validate and sanitize attacker IP — X-Forwarded-For can be spoofed/injected
-    raw_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.client.host
-    try:
-        attacker_ip = str(ipaddress.ip_address(raw_ip))
-    except ValueError:
-        attacker_ip = request.client.host or "unknown"
+    # Default to client host first, then try X-Forwarded-For override
+    attacker_ip = request.client.host or "0.0.0.0"
+    raw_forwarded = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+    if raw_forwarded:
+        try:
+            attacker_ip = str(ipaddress.ip_address(raw_forwarded))
+        except ValueError:
+            pass  # Keep request.client.host
 
     # Fix #2: Bypass the full attacker_action() pipeline for internal events to break
     # the potential recursion: credential_theft → mutation → spawn → credentials → theft
@@ -385,11 +388,13 @@ async def trigger_canary(token_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Not found")
 
     # Fix #19: Validate attacker IP from X-Forwarded-For
-    raw_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.client.host
-    try:
-        attacker_ip = str(ipaddress.ip_address(raw_ip))
-    except ValueError:
-        attacker_ip = request.client.host or "unknown"
+    attacker_ip = request.client.host or "0.0.0.0"
+    raw_forwarded = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+    if raw_forwarded:
+        try:
+            attacker_ip = str(ipaddress.ip_address(raw_forwarded))
+        except ValueError:
+            pass  # Keep request.client.host
     canary_manager.mark_triggered(token_id, attacker_ip)
 
     if sio:

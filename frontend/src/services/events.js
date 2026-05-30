@@ -13,6 +13,9 @@ export const EVENTS = {
     CANARY_TRIGGERED:   'canary_triggered',
     CREDENTIAL_STOLEN:  'credential_stolen',
     LURE_SPAWNED:       'lure_spawned',
+    THREAT_SCORE:       'threat_score',
+    DNS_QUERY:          'dns_query',
+    BREADCRUMB_UPDATE:  'breadcrumb_update',
     
     // Frontend → Backend
     TRIGGER_SCAN:       'trigger_scan',

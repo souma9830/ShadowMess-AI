@@ -72,15 +72,15 @@ export function useSocketEvents() {
       useShadowStore.getState().addAlert(`Adaptive lure deployed: ${data.label}`, 'info');
     });
 
-    socket.on('threat_score', (data) => {
+    socket.on(EVENTS.THREAT_SCORE, (data) => {
       useShadowStore.getState().setThreatScore(data.attacker_ip, data.threat_score, data.is_anomalous);
     });
 
-    socket.on('dns_query', (data) => {
+    socket.on(EVENTS.DNS_QUERY, (data) => {
       useShadowStore.getState().addDnsQuery(data);
     });
 
-    socket.on('breadcrumb_update', (data) => {
+    socket.on(EVENTS.BREADCRUMB_UPDATE, (data) => {
       useShadowStore.getState().setBreadcrumbs(data.active_count);
     });
 
@@ -98,9 +98,9 @@ export function useSocketEvents() {
       socket.off(EVENTS.CANARY_TRIGGERED);
       socket.off(EVENTS.CREDENTIAL_STOLEN);
       socket.off(EVENTS.LURE_SPAWNED);
-      socket.off('threat_score');
-      socket.off('dns_query');
-      socket.off('breadcrumb_update');
+      socket.off(EVENTS.THREAT_SCORE);
+      socket.off(EVENTS.DNS_QUERY);
+      socket.off(EVENTS.BREADCRUMB_UPDATE);
     };
   }, []);
 
