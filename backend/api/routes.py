@@ -186,6 +186,59 @@ async def get_attack_path(attacker_ip: str):
     path = await neo4j_client.get_attack_path(attacker_ip)
     return path
 
+from fastapi import Request
+from fastapi.responses import PlainTextResponse
+import time
+from backend.deception.credentials import cred_manager
+
+@router.get("/creds/{node_id}/{cred_id}")
+async def download_credential(node_id: str, cred_id: str, request: Request):
+    cred = cred_manager.get_credential(cred_id)
+    if not cred or cred.node_id != node_id:
+        raise HTTPException(status_code=404, detail="Credential not found")
+        
+    cred_manager.mark_accessed(cred_id)
+    
+    attacker_ip = request.headers.get("X-Forwarded-For") or request.client.host
+    
+    # Log the theft
+    action = AttackerAction(
+        attacker_ip=attacker_ip,
+        action_type="credential_theft",
+        target_node_id=node_id,
+        detail=f"Stolen credential: {cred.filename}",
+        timestamp=time.time()
+    )
+    
+    # Process action through existing pipeline in background
+    asyncio.create_task(attacker_action(action))
+    
+    if sio:
+        try:
+            await sio.emit(EVENTS.get('CREDENTIAL_STOLEN', 'CREDENTIAL_STOLEN'), {
+                "cred_id": cred.cred_id,
+                "filename": cred.filename,
+                "cred_type": cred.cred_type,
+                "attacker_ip": attacker_ip
+            })
+        except Exception:
+            pass
+            
+    try:
+        if hasattr(slack, 'alert_credential_stolen'):
+            asyncio.create_task(slack.alert_credential_stolen(
+                attacker_ip=attacker_ip,
+                filename=cred.filename,
+                cred_type=cred.cred_type
+            ))
+    except Exception:
+        pass
+        
+    return PlainTextResponse(
+        content=cred.content,
+        media_type="application/octet-stream"
+    )
+
 
 async def _do_mutate():
     """Background task: use Phase 3 mutator to reshuffle topology and broadcast."""
