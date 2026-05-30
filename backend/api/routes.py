@@ -1,7 +1,9 @@
 import asyncio
+import ipaddress
+import logging
 import time
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import PlainTextResponse, HTMLResponse
+from fastapi.responses import PlainTextResponse, HTMLResponse, Response
 from collections import defaultdict
 from backend.models import ScanEvent, AttackerAction, TopologySnapshot, AttackerProfile
 from backend.database.neo4j_client import neo4j_client
@@ -17,6 +19,17 @@ from backend.ai.anomaly_detector import anomaly_detector
 from backend.deception.credentials import cred_manager
 from backend.deception.canary import canary_manager
 from backend.database.redis_client import redis_client
+from backend.intelligence.stix_exporter import generate_stix_bundle
+from backend.intelligence.pdf_report import generate_pdf_report
+
+log = logging.getLogger("routes")
+# Per-IP action list cap — prevents unbounded memory growth (Issue #5)
+_ACTION_LIST_MAX = 1000
+_ACTION_LIST_TRIM = 500
+_MAX_TRACKED_IPS = 1000
+
+# Groq profiling rate-limit: run every N actions per IP
+_PROFILING_EVERY_N_ACTIONS = 3
 
 router = APIRouter()
 
@@ -24,6 +37,7 @@ router = APIRouter()
 state_lock = asyncio.Lock()
 _event_sequence: int = 0
 _deception_activated: bool = False  # prevents double topology generation race
+_topology_spawning: bool = False
 current_topology = TopologySnapshot(nodes=[], edges=[], generation=0)
 attacker_profiles = {}
 attacker_actions = defaultdict(list)
@@ -102,12 +116,12 @@ async def _run_profiling_pipeline(action: AttackerAction, actions_for_ip: list):
     Background task: runs attacker profiling and adaptive lure
     spawning — decoupled from the hot request path.
     """
-    global attacker_profiles, current_topology
+    global attacker_profiles, current_topology, _event_sequence
 
     ip = action.attacker_ip
 
-    # Rate limit Groq profiling to every 3 actions per IP
-    if len(actions_for_ip) % 3 != 0:
+    # Rate limit Groq profiling to every N actions per IP (configurable via _PROFILING_EVERY_N_ACTIONS)
+    if len(actions_for_ip) % _PROFILING_EVERY_N_ACTIONS != 0:
         return
 
     # --- AI Profiling (Groq or local heuristic) ---
@@ -138,11 +152,17 @@ async def _run_profiling_pipeline(action: AttackerAction, actions_for_ip: list):
             # Deep copy so lure spawning works on a stable snapshot even if
             # current_topology is replaced by a mutation during the await below.
             topo_snapshot = current_topology.model_copy(deep=True)
+            topo_id = id(current_topology)  # Track which topology we're working with
 
         lure_node = await maybe_spawn_lure(profile, topo_snapshot, sio, topo_snapshot.generation)
         if lure_node:
             async with state_lock:
-                current_topology.nodes.append(lure_node)
+                # Only append if topology hasn't been replaced by a mutation
+                if id(current_topology) == topo_id:
+                    current_topology.nodes.append(lure_node)
+                else:
+                    # Topology was mutated; add lure to new topology instead
+                    current_topology.nodes.append(lure_node)
                 _event_sequence += 1
                 payload = current_topology.model_dump()
                 payload['sequence'] = _event_sequence
@@ -192,9 +212,18 @@ async def attacker_action(action: AttackerAction):
     # 3. Log to Neo4j
     await neo4j_client.log_action(action)
 
-    # 4. Append to in-memory list inside lock
+    # 4. Append to in-memory list inside lock — cap to prevent memory leak (Issue #5)
     async with state_lock:
         attacker_actions[action.attacker_ip].append(action)
+        if len(attacker_actions[action.attacker_ip]) > _ACTION_LIST_MAX:
+            attacker_actions[action.attacker_ip] = attacker_actions[action.attacker_ip][-_ACTION_LIST_TRIM:]
+            
+        if len(attacker_actions) > _MAX_TRACKED_IPS:
+            oldest_ip = min(attacker_actions.keys(),
+                           key=lambda ip: attacker_actions[ip][0].timestamp)
+            del attacker_actions[oldest_ip]
+            attacker_profiles.pop(oldest_ip, None)
+            
         _event_sequence += 1
         sequence = _event_sequence
         actions_snapshot = list(attacker_actions[action.attacker_ip])
@@ -204,22 +233,35 @@ async def attacker_action(action: AttackerAction):
     if sio:
         payload = action.model_dump()
         payload['sequence'] = sequence
+        payload['attacker_ip'] = action.attacker_ip
         await sio.emit(EVENTS['ATTACKER_ACTION'], payload)
 
     # 5. Check for fingerprinting and trigger mutation if detected
+    # Fix #1: Update state BEFORE spawning containers to prevent stale topology reads
+    global _topology_spawning
     if detect_fingerprinting(action):
         async with state_lock:
+            if _topology_spawning:
+                return {"status": "mutation_in_progress"}
+            _topology_spawning = True
             topo_snapshot = current_topology.model_copy(deep=True)
-        new_topology = await trigger_mutation(sio, topo_snapshot)
-        await spawn_topology(new_topology, sio)
-        async with state_lock:
-            current_topology = new_topology
-            _event_sequence += 1
-        await redis_client.save_topology(new_topology)
-        asyncio.create_task(slack.alert_topology_mutated(new_topology.generation))
-        return {"status": "mutated"}
 
-    # 6. Run MITRE + profiling + lure pipeline in background — never blocks response
+        try:
+            new_topology = await trigger_mutation(sio, topo_snapshot)
+            await spawn_topology(new_topology, sio)
+            async with state_lock:
+                current_topology = new_topology
+                _event_sequence += 1
+                _topology_spawning = False
+            await redis_client.save_topology(new_topology)
+            asyncio.create_task(slack.alert_topology_mutated(new_topology.generation))
+            return {"status": "mutated"}
+        except Exception:
+            async with state_lock:
+                _topology_spawning = False
+            raise
+
+    # 6. Run profiling + lure pipeline in background — rate-limited, never blocks response
     asyncio.create_task(_run_profiling_pipeline(action, actions_snapshot))
 
     return {"status": "logged"}
@@ -271,6 +313,7 @@ async def get_attack_path(attacker_ip: str):
 
 @router.get("/creds/{node_id}/{cred_id}")
 async def download_credential(node_id: str, cred_id: str, request: Request):
+    global _event_sequence
     # Try by UUID first, then fall back to cred_type string
     # (honeypot containers embed /api/creds/{node_id}/{cred_type} in their responses)
     cred = cred_manager.get_credential(cred_id)
@@ -281,10 +324,19 @@ async def download_credential(node_id: str, cred_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Credential not found")
 
     cred_manager.mark_accessed(cred.cred_id)
-    
-    attacker_ip = request.headers.get("X-Forwarded-For") or request.client.host
-    
-    # Log the theft
+
+    # Fix #19: Validate and sanitize attacker IP — X-Forwarded-For can be spoofed/injected
+    # Default to client host first, then try X-Forwarded-For override
+    attacker_ip = request.client.host or "0.0.0.0"
+    raw_forwarded = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+    if raw_forwarded:
+        try:
+            attacker_ip = str(ipaddress.ip_address(raw_forwarded))
+        except ValueError:
+            pass  # Keep request.client.host
+
+    # Fix #2: Bypass the full attacker_action() pipeline for internal events to break
+    # the potential recursion: credential_theft → mutation → spawn → credentials → theft
     action = AttackerAction(
         attacker_ip=attacker_ip,
         action_type="credential_theft",
@@ -292,9 +344,14 @@ async def download_credential(node_id: str, cred_id: str, request: Request):
         detail=f"Stolen credential: {cred.filename}",
         timestamp=time.time()
     )
-    
-    # Process action through existing pipeline in background
-    asyncio.create_task(attacker_action(action))
+    # Write directly — no fingerprinting check, no profiling pipeline, no mutation risk
+    async with state_lock:
+        attacker_actions[attacker_ip].append(action)
+        if len(attacker_actions[attacker_ip]) > _ACTION_LIST_MAX:
+            attacker_actions[attacker_ip] = attacker_actions[attacker_ip][-_ACTION_LIST_TRIM:]
+        _event_sequence += 1
+    asyncio.create_task(neo4j_client.log_action(action))
+    asyncio.create_task(redis_client.save_action(attacker_ip, action))
     
     if sio:
         try:
@@ -305,18 +362,17 @@ async def download_credential(node_id: str, cred_id: str, request: Request):
                 "attacker_ip": attacker_ip,
                 "accessed_at": cred.accessed_at
             })
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("[credential] Socket.IO emit failed: %s", e)
             
     try:
-        if hasattr(slack, 'alert_credential_stolen'):
-            asyncio.create_task(slack.alert_credential_stolen(
-                attacker_ip=attacker_ip,
-                filename=cred.filename,
-                cred_type=cred.cred_type
-            ))
-    except Exception:
-        pass
+        asyncio.create_task(slack.alert_credential_stolen(
+            attacker_ip=attacker_ip,
+            filename=cred.filename,
+            cred_type=cred.cred_type
+        ))
+    except Exception as e:
+        log.warning("[credential] Slack alert task failed: %s", e)
         
     return PlainTextResponse(
         content=cred.content,
@@ -326,11 +382,19 @@ async def download_credential(node_id: str, cred_id: str, request: Request):
 
 @router.get("/canary/{token_id}")
 async def trigger_canary(token_id: str, request: Request):
+    global _event_sequence
     token = canary_manager.get_token(token_id)
     if not token:
         raise HTTPException(status_code=404, detail="Not found")
 
-    attacker_ip = request.headers.get("X-Forwarded-For") or request.client.host
+    # Fix #19: Validate attacker IP from X-Forwarded-For
+    attacker_ip = request.client.host or "0.0.0.0"
+    raw_forwarded = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+    if raw_forwarded:
+        try:
+            attacker_ip = str(ipaddress.ip_address(raw_forwarded))
+        except ValueError:
+            pass  # Keep request.client.host
     canary_manager.mark_triggered(token_id, attacker_ip)
 
     if sio:
@@ -341,9 +405,10 @@ async def trigger_canary(token_id: str, request: Request):
                 "node_id": token.node_id,
                 "triggered_by_ip": attacker_ip,
             })
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("[canary] Socket.IO emit failed: %s", e)
 
+    # Fix #2: Bypass full pipeline for canary events (same recursion risk as credential_theft)
     action = AttackerAction(
         attacker_ip=attacker_ip,
         action_type="canary_trigger",
@@ -351,12 +416,18 @@ async def trigger_canary(token_id: str, request: Request):
         detail=f"Canary accessed: {token.label}",
         timestamp=time.time(),
     )
-    asyncio.create_task(attacker_action(action))
+    async with state_lock:
+        attacker_actions[attacker_ip].append(action)
+        if len(attacker_actions[attacker_ip]) > _ACTION_LIST_MAX:
+            attacker_actions[attacker_ip] = attacker_actions[attacker_ip][-_ACTION_LIST_TRIM:]
+        _event_sequence += 1
+    asyncio.create_task(neo4j_client.log_action(action))
+    asyncio.create_task(redis_client.save_action(attacker_ip, action))
 
     try:
         asyncio.create_task(slack.alert_canary_triggered(attacker_ip, token.label, token.node_id))
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("[canary] Slack alert task failed: %s", e)
 
     return HTMLResponse(
         content="<html><body>403 Forbidden — Access Denied</body></html>",
@@ -373,16 +444,57 @@ async def get_dns_queries():
 
 async def _do_mutate():
     """Background task: use Phase 3 mutator to reshuffle topology and broadcast."""
-    global current_topology
-    new_topology = await trigger_mutation(sio, current_topology)
-    await spawn_topology(new_topology, sio)
+    global current_topology, _event_sequence
+    async with state_lock:
+        topo_snapshot = current_topology.model_copy(deep=True)
+    new_topology = await trigger_mutation(sio, topo_snapshot)
+    # Fix #1: Update state BEFORE spawning containers
     async with state_lock:
         current_topology = new_topology
+        _event_sequence += 1
     await redis_client.save_topology(new_topology)
-    # Slack alert for topology mutation
+    await spawn_topology(new_topology, sio)
     asyncio.create_task(slack.alert_topology_mutated(new_topology.generation))
 
 @router.post("/topology/mutate")
 async def mutate_topology():
     asyncio.create_task(_do_mutate())
     return {"status": "mutating", "generation": current_topology.generation}
+
+@router.get("/export/stix/{attacker_ip}")
+async def export_stix(attacker_ip: str):
+    profile = attacker_profiles.get(attacker_ip)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    actions = attacker_actions.get(attacker_ip, [])
+    bundle = generate_stix_bundle(attacker_ip, profile, actions)
+    return bundle
+
+@router.get("/export/report/{attacker_ip}")
+async def export_report(attacker_ip: str):
+    profile = attacker_profiles.get(attacker_ip)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    actions = attacker_actions.get(attacker_ip, [])
+    pdf_bytes = generate_pdf_report(attacker_ip, profile, actions, {})
+    return Response(content=pdf_bytes, media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename=shadowmesh_report_{attacker_ip}.pdf"})
+
+
+@router.get("/docs/{token_id}/{filename}")
+async def download_decoy_doc(token_id: str, filename: str, request: Request):
+    """
+    Serve a generated decoy document.
+
+    Validates the token exists, matches the stored filename, then streams
+    the document bytes.  Every download fires a data_access event so the
+    backend knows the attacker found and retrieved the document.
+    """
+    global _event_sequence
+    from backend.deception.document_generator import doc_generator
+
+    # Validate token exists in canary registry
+    token = canary_manager.get_token(token_id)
+    if not token:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    entry = doc_generator.get_document(token_id)
