@@ -281,7 +281,7 @@ async def start_orchestrator_health_monitor(sio, loop):
                 log.error("[health] Orchestrator UNREACHABLE — container spawning disabled")
                 if sio:
                     try:
-                        await sio.emit('alert', {
+                        await sio.emit(EVENTS['ALERT'], {
                             'message': 'Orchestrator unreachable — container spawning disabled. Check orchestrator service.',
                             'severity': 'critical'
                         })
@@ -291,7 +291,7 @@ async def start_orchestrator_health_monitor(sio, loop):
                 log.info("[health] Orchestrator RECOVERED — container spawning restored")
                 if sio:
                     try:
-                        await sio.emit('alert', {
+                        await sio.emit(EVENTS['ALERT'], {
                             'message': 'Orchestrator connection restored — container spawning operational.',
                             'severity': 'info'
                         })

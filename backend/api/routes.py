@@ -157,12 +157,9 @@ async def _run_profiling_pipeline(action: AttackerAction, actions_for_ip: list):
         lure_node = await maybe_spawn_lure(profile, topo_snapshot, sio, topo_snapshot.generation)
         if lure_node:
             async with state_lock:
-                # Only append if topology hasn't been replaced by a mutation
-                if id(current_topology) == topo_id:
-                    current_topology.nodes.append(lure_node)
-                else:
-                    # Topology was mutated; add lure to new topology instead
-                    current_topology.nodes.append(lure_node)
+                # Always append to current_topology regardless of whether it was mutated —
+                # the lure container is already running and must be tracked.
+                current_topology.nodes.append(lure_node)
                 _event_sequence += 1
                 payload = current_topology.model_dump()
                 payload['sequence'] = _event_sequence
@@ -457,7 +454,7 @@ async def breadcrumb_heartbeat(request: Request):
         await redis_client.save_breadcrumb_heartbeat(agent_host, planted_paths, timestamp)
         count = await redis_client.get_active_breadcrumb_count()
         if sio:
-            await sio.emit(EVENTS.get('BREADCRUMB_UPDATE', 'breadcrumb_update'), {"active_count": count})
+            await sio.emit(EVENTS['BREADCRUMB_UPDATE'], {"active_count": count})
     except Exception as e:
         log.warning("[breadcrumb] Heartbeat storage failed: %s", e)
 
@@ -554,7 +551,7 @@ async def download_decoy_doc(token_id: str, filename: str, request: Request):
         try:
             await sio.emit(EVENTS['ATTACKER_ACTION'], {
                 **action.model_dump(),
-                "sequence": _event_sequence,
+                "sequence": sequence,
             })
         except Exception as exc:
             log.warning("[docs] Socket.IO emit failed: %s", exc)

@@ -43,3 +43,7 @@ enterprise-attack.json
 *.swp
 *.swo
 .DS_Store
+
+# Runtime artifacts
+*.npy
+pytest.ini

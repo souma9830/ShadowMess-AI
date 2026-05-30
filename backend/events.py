@@ -33,6 +33,9 @@ EVENTS = {
     'PROJECTION_PORT_SCAN':    'projection_port_scan',    # TCP SYN to projected IP/port
     'PROJECTION_SERVICE_PROBE':'projection_service_probe',# Known-service port probed on projected node
 
+    # Breadcrumb agent heartbeat (Phase 13.2)
+    'BREADCRUMB_UPDATE':  'breadcrumb_update',     # Active breadcrumb count update
+
     # Frontend -> Backend Interactivity (Demo triggers)
     'TRIGGER_SCAN':       'trigger_scan',          # Manual scan simulation for demo
     'TRIGGER_LOGIN':      'trigger_login',         # Manual login attempt simulation

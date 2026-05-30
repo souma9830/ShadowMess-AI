@@ -183,10 +183,17 @@ class SIEMIntegration:
             f"rt={int(action.timestamp * 1000)}"
         )
 
+        # Run blocking UDP send in executor so it doesn't block the event loop
+        import asyncio as _asyncio
+        loop = _asyncio.get_event_loop()
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.sendto(cef.encode("utf-8"), (self.syslog_host, self.syslog_port))
-            sock.close()
+            def _send():
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                try:
+                    sock.sendto(cef.encode("utf-8"), (self.syslog_host, self.syslog_port))
+                finally:
+                    sock.close()
+            await loop.run_in_executor(None, _send)
             log.debug("[siem] Syslog CEF sent to %s:%d", self.syslog_host, self.syslog_port)
         except Exception as e:
             log.warning("[siem] Syslog send failed: %s", e)
