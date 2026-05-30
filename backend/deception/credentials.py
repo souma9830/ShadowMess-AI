@@ -57,6 +57,9 @@ class CredentialManager:
             cred.accessed_at = time.time()
         return cred
 
+    def clear_for_node(self, node_id: str) -> None:
+        self._credentials = {cid: c for cid, c in self._credentials.items() if c.node_id != node_id}
+
     def get_all_for_node(self, node_id: str) -> List[FakeCredential]:
         return [cred for cred in self._credentials.values() if cred.node_id == node_id]
 

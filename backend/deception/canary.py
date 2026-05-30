@@ -49,6 +49,9 @@ class CanaryManager:
             token.triggered_by_ip = triggered_by_ip
         return token
 
+    def clear_for_node(self, node_id: str) -> None:
+        self._tokens = {tid: t for tid, t in self._tokens.items() if t.node_id != node_id}
+
     def get_all_for_node(self, node_id: str) -> List[CanaryToken]:
         return [t for t in self._tokens.values() if t.node_id == node_id]
 

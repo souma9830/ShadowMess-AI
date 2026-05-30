@@ -23,11 +23,14 @@ Docker images used (must be pre-built):
 
 import asyncio
 import logging
+import os
 from typing import Dict, Optional
 
 from backend.models import NetworkNode, TopologySnapshot
 from backend.deception.credentials import cred_manager
 from backend.deception.canary import canary_manager
+
+HONEYPOT_CALLBACK_URL = os.getenv("HONEYPOT_CALLBACK_URL", "http://host.docker.internal:8000")
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -125,7 +128,7 @@ async def spawn_container(node: NetworkNode, canary_url: str = "") -> Optional[s
                 network=DOCKER_NETWORK,
                 environment={
                     "NODE_ID": node.node_id,
-                    "ATTACKER_CALLBACK_URL": "http://host.docker.internal:8000",
+                    "ATTACKER_CALLBACK_URL": HONEYPOT_CALLBACK_URL,
                     "CANARY_WIKI_URL": canary_url,
                 },
                 mem_limit="64m",
@@ -181,6 +184,8 @@ async def teardown_all() -> None:
     )
 
     for node_id, cid in list(active_containers.items()):
+        cred_manager.clear_for_node(node_id)
+        canary_manager.clear_for_node(node_id)
         try:
             if _docker_available and _docker_client is not None:
                 container = await asyncio.get_event_loop().run_in_executor(

@@ -363,7 +363,9 @@ def get_users():
 
 @app.route("/api/config", methods=["GET"])
 def get_config():
-    return jsonify(FAKE_CONFIG)
+    config = dict(FAKE_CONFIG)
+    config["backup_config_url"] = f"/api/creds/{NODE_ID}/env_file"
+    return jsonify(config)
 
 
 @app.route("/api/login", methods=["POST"])

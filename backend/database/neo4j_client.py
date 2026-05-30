@@ -53,7 +53,8 @@ class Neo4jClient:
             # Seed demo data, using MERGE to prevent duplicates
             await session.run("""
                 MERGE (a:Attacker {ip: '192.168.1.100'})
-                MERGE (n:Node {node_id: 'node_demo', node_type: 'web_server'})
+                MERGE (n:Node {node_id: 'node_demo'})
+                ON CREATE SET n.node_type = 'web_server'
                 MERGE (a)-[r:PERFORMED {action_type: 'port_scan'}]->(n)
                 ON CREATE SET r.timestamp = $timestamp
             """, timestamp=current_epoch)

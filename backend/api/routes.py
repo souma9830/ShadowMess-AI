@@ -1,5 +1,7 @@
 import asyncio
-from fastapi import APIRouter, HTTPException
+import time
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import PlainTextResponse, HTMLResponse
 from collections import defaultdict
 from backend.models import ScanEvent, AttackerAction, TopologySnapshot, AttackerProfile
 from backend.database.neo4j_client import neo4j_client
@@ -11,6 +13,8 @@ from backend.ai.lure_generator import maybe_spawn_lure
 from backend.mitre.mapper import mitre_mapper
 from backend.alerting import slack
 from backend.deception.container_manager import spawn_topology
+from backend.deception.credentials import cred_manager
+from backend.deception.canary import canary_manager
 
 router = APIRouter()
 
@@ -57,15 +61,10 @@ async def detect_scan(scan: ScanEvent):
     return {"status": "deception_activated", "node_count": len(current_topology.nodes)}
 
 
-async def _run_profiling_pipeline(action: AttackerAction):
-    """
-    Background task: runs MITRE tagging, attacker profiling, and adaptive lure
-    spawning — all decoupled from the hot request path.
-    """
+async def _run_profiling_pipeline(action: AttackerAction, actions_for_ip: list):
     global attacker_profiles, current_topology
 
     ip = action.attacker_ip
-    actions_for_ip = attacker_actions.get(ip, [])
 
     # --- MITRE tagging ---
     mitre_tag = mitre_mapper.tag_action(action.action_type, action.detail)
@@ -130,6 +129,7 @@ async def attacker_action(action: AttackerAction):
         attacker_actions[action.attacker_ip].append(action)
         _event_sequence += 1
         sequence = _event_sequence
+        actions_snapshot = list(attacker_actions[action.attacker_ip])
 
     if sio:
         payload = action.model_dump()
@@ -137,7 +137,7 @@ async def attacker_action(action: AttackerAction):
         await sio.emit(EVENTS['ATTACKER_ACTION'], payload)
 
     # 3. Run MITRE + profiling + lure pipeline in background — never blocks response
-    asyncio.create_task(_run_profiling_pipeline(action))
+    asyncio.create_task(_run_profiling_pipeline(action, actions_snapshot))
 
     return {"status": "logged"}
 
@@ -186,12 +186,6 @@ async def get_attack_path(attacker_ip: str):
     path = await neo4j_client.get_attack_path(attacker_ip)
     return path
 
-from fastapi import Request
-from fastapi.responses import PlainTextResponse, HTMLResponse
-import time
-from backend.deception.credentials import cred_manager
-from backend.deception.canary import canary_manager
-
 @router.get("/creds/{node_id}/{cred_id}")
 async def download_credential(node_id: str, cred_id: str, request: Request):
     cred = cred_manager.get_credential(cred_id)
@@ -216,7 +210,7 @@ async def download_credential(node_id: str, cred_id: str, request: Request):
     
     if sio:
         try:
-            await sio.emit(EVENTS.get('CREDENTIAL_STOLEN', 'CREDENTIAL_STOLEN'), {
+            await sio.emit(EVENTS['CREDENTIAL_STOLEN'], {
                 "cred_id": cred.cred_id,
                 "filename": cred.filename,
                 "cred_type": cred.cred_type,

@@ -50,6 +50,10 @@ services:
     ports:
       - "8000:8000"
     env_file: .env
+    environment:
+      # Honeypot containers on deception_net reach the host-networked backend via the Docker bridge gateway.
+      # On Linux: 172.17.0.1. On Docker Desktop (Win/Mac): host.docker.internal resolves automatically.
+      HONEYPOT_CALLBACK_URL: "http://172.17.0.1:8000"
     depends_on:
       neo4j:
         condition: service_healthy

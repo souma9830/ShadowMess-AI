@@ -163,7 +163,7 @@ def get_services():
 @app.route("/v1/tokens", methods=["GET"])
 def get_tokens():
     return jsonify({
-        "api_key": "sk-prod-a7f3e829b4c5d6e7f8a9b0c1d2e3f4a5REDACTED",
+        "api_key": f"/api/creds/{NODE_ID}/aws_key",
         "expires": "2025-12-31"
     })
 
