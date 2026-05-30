@@ -1,5 +1,6 @@
 import socketio
 import asyncio
+import logging
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from backend.database.neo4j_client import neo4j_client
@@ -7,6 +8,10 @@ from backend.api.routes import router as api_router, set_sio
 from backend.events import EVENTS
 from backend.mitre.mapper import mitre_mapper
 from backend.deception.container_manager import active_containers
+
+# Configure logger
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("backend")
 
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
 set_sio(sio)
@@ -61,7 +66,25 @@ async def handle_trigger_mutate(sid):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    await neo4j_client.connect_with_retry()
+    try:
+        await neo4j_client.init_schema()
+    except Exception as e:
+        logger.warning(f"Neo4j init_schema failed: {e}")
+
+    try:
+        healthy = await neo4j_client.health_check()
+    except Exception as e:
+        logger.warning(f"Neo4j health check failed: {e}")
+        healthy = False
+
+    if healthy:
+        try:
+            await neo4j_client.seed_demo_data()
+        except Exception as e:
+            logger.warning(f"Neo4j seed_demo_data failed: {e}")
+        logger.info("Neo4j connected")
+    else:
+        logger.error("Neo4j connection failed")
     
     print("ShadowMesh backend online")
     yield
@@ -83,12 +106,26 @@ socket_app = socketio.ASGIApp(sio, other_asgi_app=app)
 
 @app.get("/health")
 async def health():
-    healthy = await neo4j_client.health_check()
+    try:
+        healthy = await neo4j_client.health_check()
+    except Exception:
+        healthy = False
+
+    try:
+        mitre_loaded = bool(mitre_mapper._is_initialized)
+    except Exception:
+        mitre_loaded = False
+
+    try:
+        container_count = len(active_containers)
+    except Exception:
+        container_count = 0
+
     return {
         "status": "ok",
         "neo4j": healthy,
-        "mitre_loaded": mitre_mapper._is_initialized,
-        "active_containers": len(active_containers)
+        "mitre_loaded": mitre_loaded,
+        "active_containers": container_count
     }
 
 if __name__ == "__main__":
