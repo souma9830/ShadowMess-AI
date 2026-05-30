@@ -69,7 +69,7 @@ export function useSocketEvents() {
     });
 
     socket.on(EVENTS.LURE_SPAWNED, (data) => {
-      useShadowStore.getState().addAlert(`Adaptive lure deployed: ${data.lure_type}`, 'info');
+      useShadowStore.getState().addAlert(`Adaptive lure deployed: ${data.label}`, 'info');
     });
 
     socket.on('threat_score', (data) => {
