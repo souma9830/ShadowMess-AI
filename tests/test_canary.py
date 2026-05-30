@@ -63,7 +63,7 @@ check("7. get_all_for_node returns only matching node tokens", len(node_a_tokens
 check("7b. All returned tokens belong to node_A", all(t.node_id == "node_A" for t in node_a_tokens))
 
 # ── 8. Route behavior — 404 on unknown token ────────────────────────────────
-async def test_route_404():
+async def check_route_404():
     from fastapi.testclient import TestClient
     from fastapi import FastAPI
     from backend.api.routes import router, set_sio
@@ -74,10 +74,10 @@ async def test_route_404():
     resp = client.get("/api/canary/doesnotexist")
     check("8. Route returns 404 for unknown token", resp.status_code == 404)
 
-asyncio.run(test_route_404())
+asyncio.run(check_route_404())
 
 # ── 9. Route behavior — 403 on valid token ───────────────────────────────────
-async def test_route_403():
+async def check_route_403():
     from fastapi.testclient import TestClient
     from fastapi import FastAPI
     from backend.api.routes import router, set_sio
@@ -94,10 +94,10 @@ async def test_route_403():
     check("9. Route returns 403 for valid token", resp.status_code == 403)
     check("9b. Response body contains 'Forbidden'", "Forbidden" in resp.text)
 
-asyncio.run(test_route_403())
+asyncio.run(check_route_403())
 
 # ── 10. Socket.IO event emission ─────────────────────────────────────────────
-async def test_socket_emit():
+async def check_socket_emit():
     from fastapi.testclient import TestClient
     from fastapi import FastAPI
     from backend.api.routes import router, set_sio
@@ -117,10 +117,10 @@ async def test_socket_emit():
     check("10. CANARY_TRIGGERED event emitted", "canary_triggered" in emitted_events)
     set_sio(None)
 
-asyncio.run(test_socket_emit())
+asyncio.run(check_socket_emit())
 
 # ── 11. Alert integration failure handling ───────────────────────────────────
-async def test_alert_failure():
+async def check_alert_failure():
     from fastapi.testclient import TestClient
     from fastapi import FastAPI
     from backend.api.routes import router, set_sio
@@ -138,7 +138,7 @@ async def test_alert_failure():
         resp = client.get(f"/api/canary/{token_id}")
     check("11. Route still returns 403 when Slack alert fails", resp.status_code == 403)
 
-asyncio.run(test_alert_failure())
+asyncio.run(check_alert_failure())
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 total = len(results)
