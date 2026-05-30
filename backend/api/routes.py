@@ -230,6 +230,10 @@ async def attacker_action(action: AttackerAction):
 
     await redis_client.save_action(action.attacker_ip, action)
 
+    # Phase 13.1: Fire SIEM integrations in background
+    from backend.integrations.siem import siem
+    asyncio.create_task(siem.send_all(action, attacker_profiles.get(action.attacker_ip)))
+
     if sio:
         payload = action.model_dump()
         payload['sequence'] = sequence
@@ -440,6 +444,24 @@ async def get_dns_queries():
     from backend.detection.dns_honeypot import get_instance
     honeypot = get_instance()
     return honeypot.get_query_log() if honeypot else []
+
+
+@router.post("/breadcrumbs/report")
+async def breadcrumb_heartbeat(request: Request):
+    data = await request.json()
+    agent_host = data.get("agent_host", "unknown")
+    planted_paths = data.get("planted_paths", [])
+    timestamp = data.get("timestamp", time.time())
+
+    try:
+        await redis_client.save_breadcrumb_heartbeat(agent_host, planted_paths, timestamp)
+        count = await redis_client.get_active_breadcrumb_count()
+        if sio:
+            await sio.emit(EVENTS.get('BREADCRUMB_UPDATE', 'breadcrumb_update'), {"active_count": count})
+    except Exception as e:
+        log.warning("[breadcrumb] Heartbeat storage failed: %s", e)
+
+    return {"status": "ok", "agent_host": agent_host}
 
 
 async def _do_mutate():
