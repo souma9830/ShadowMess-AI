@@ -171,7 +171,7 @@ function App() {
           )}
         </AnimatePresence>
         {/* Left Sidebar */}
-        <aside className="w-80 border-r border-[#2a2a2a] p-4 flex flex-col gap-4 bg-[#0d0d0d] overflow-y-auto z-10">
+        <aside className="w-80 shrink-0 border-r border-[#2a2a2a] p-4 flex flex-col gap-4 bg-[#0d0d0d] overflow-y-auto z-10">
           <div className="shrink-0 h-32 border border-[#2a2a2a] rounded-lg bg-[#161616]">
             <StatsBar />
           </div>
@@ -194,7 +194,7 @@ function App() {
         </section>
         
         {/* Right Sidebar */}
-        <aside className="w-80 flex flex-col bg-[#0d0d0d] border-l border-[#2a2a2a] z-10">
+        <aside className="w-80 shrink-0 flex flex-col bg-[#0d0d0d] border-l border-[#2a2a2a] z-10">
           <div className="flex-1 overflow-hidden">
             <ErrorBoundary componentName="AlertFeed">
               <AlertFeed />

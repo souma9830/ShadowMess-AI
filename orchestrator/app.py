@@ -34,21 +34,32 @@ ALLOWED_IMAGES = {
     "shadowmesh-fake-api",
     "shadowmesh-fake-auth",
     "shadowmesh-fake-ssh",
+    "shadowmesh-fake-rdp",
+    # Task 11.4: Protocol honeypots
+    "shadowmesh-fake-smb",
+    "shadowmesh-fake-mqtt",
+    "shadowmesh-fake-redis",
+    "shadowmesh-fake-elasticsearch",
 }
 
-# node_type → Docker image (mirrors container_manager.py mapping)
+# node_type -> Docker image (mirrors container_manager.py mapping)
 IMAGE_MAP = {
-    "web_server":   "shadowmesh-fake-http",
-    "db_server":    "shadowmesh-fake-db",
-    "auth_service": "shadowmesh-fake-auth",
-    "file_server":  "shadowmesh-fake-http",
-    "api_gateway":  "shadowmesh-fake-api",
-    "mail_server":  "shadowmesh-fake-http",
-    "workstation":  "shadowmesh-fake-http",
+    "web_server":          "shadowmesh-fake-http",
+    "db_server":           "shadowmesh-fake-db",
+    "auth_service":        "shadowmesh-fake-auth",
+    "file_server":         "shadowmesh-fake-smb",
+    "api_gateway":         "shadowmesh-fake-api",
+    "mail_server":         "shadowmesh-fake-http",
+    "workstation":         "shadowmesh-fake-rdp",
+    # Task 11.4: new node types
+    "smb_server":          "shadowmesh-fake-smb",
+    "mqtt_broker":         "shadowmesh-fake-mqtt",
+    "redis_server":        "shadowmesh-fake-redis",
+    "elasticsearch_node":  "shadowmesh-fake-elasticsearch",
 }
 
-DOCKER_NETWORK   = os.getenv("DECEPTION_NETWORK", "shadowmesh_deception_net")
-# node_id → container_id registry (in-process; orchestrator is single-instance)
+DOCKER_NETWORK = os.getenv("DECEPTION_NETWORK", "shadowmesh_deception_net")
+# node_id -> container_id registry (in-process; orchestrator is single-instance)
 _active: dict[str, str] = {}
 
 # ---------------------------------------------------------------------------
@@ -115,11 +126,11 @@ def spawn():
     callback_url = data.get("callback_url", "")
     canary_url   = data.get("canary_url", "")
 
-    # ── Validate node_id ────────────────────────────────────────────────────
+    # -- Validate node_id ---------------------------------------------------
     if not _safe_id(node_id):
         return jsonify({"error": "Invalid node_id — alphanumeric, _ and - only"}), 400
 
-    # ── Resolve image from whitelist ────────────────────────────────────────
+    # -- Resolve image from whitelist ----------------------------------------
     image = IMAGE_MAP.get(node_type)
     if image is None:
         return jsonify({"error": f"node_type '{node_type}' not allowed"}), 400
@@ -127,17 +138,32 @@ def spawn():
         # Defensive double-check — IMAGE_MAP values must always be in ALLOWED_IMAGES
         return jsonify({"error": f"image '{image}' not in ALLOWED_IMAGES whitelist"}), 400
 
-    # ── Duplicate detection ─────────────────────────────────────────────────
+    # -- Duplicate detection (Fix #11) --------------------------------------
+    # Verify the cached container is actually still running before returning
+    # the stale ID.  If it's dead, clear the registry and spawn fresh.
     if node_id in _active:
-        log.warning("[spawn] node_id '%s' already has container %s — returning existing", node_id, _active[node_id])
-        return jsonify({"container_id": _active[node_id], "reused": True})
+        cached_cid = _active[node_id]
+        client_check = _get_docker()
+        if client_check:
+            try:
+                existing = client_check.containers.get(cached_cid)
+                if existing.status == "running":
+                    log.info("[spawn] node_id '%s' reusing live container %s", node_id, cached_cid)
+                    return jsonify({"container_id": cached_cid, "reused": True})
+                else:
+                    log.warning("[spawn] Cached container %s for '%s' is '%s' — evicting and re-spawning",
+                                cached_cid, node_id, existing.status)
+            except Exception:
+                log.warning("[spawn] Cached container %s for '%s' no longer exists — evicting",
+                            cached_cid, node_id)
+        _active.pop(node_id, None)
 
-    # ── Docker availability ─────────────────────────────────────────────────
+    # -- Docker availability ------------------------------------------------
     client = _get_docker()
     if client is None:
         return jsonify({"error": "Docker daemon unavailable"}), 503
 
-    # ── Derive safe hostname ────────────────────────────────────────────────
+    # -- Derive safe hostname -----------------------------------------------
     suffix = re.sub(r'[^a-z0-9]', '', node_id.lower().replace("node_", ""))[:12]
     hostname = f"fake-{node_type.replace('_', '-')}-{suffix}"
     container_name = f"sm_{node_id}"
@@ -151,9 +177,9 @@ def spawn():
             hostname=hostname,
             network=DOCKER_NETWORK,
             environment={
-                "NODE_ID":                node_id,
-                "ATTACKER_CALLBACK_URL":  callback_url,
-                "CANARY_WIKI_URL":        canary_url,
+                "NODE_ID":               node_id,
+                "ATTACKER_CALLBACK_URL": callback_url,
+                "CANARY_WIKI_URL":       canary_url,
             },
             mem_limit="64m",
             cpu_period=100_000,
@@ -165,11 +191,11 @@ def spawn():
         )
         cid = container.short_id
         _active[node_id] = cid
-        log.info("[spawn] ✓ %s (%s) → %s [%s]", node_id, node_type, cid, image)
+        log.info("[spawn] OK %s (%s) -> %s [%s]", node_id, node_type, cid, image)
         return jsonify({"container_id": cid})
 
     except Exception as exc:
-        log.error("[spawn] ✗ %s: %s", node_id, exc)
+        log.error("[spawn] FAIL %s: %s", node_id, exc)
         return jsonify({"error": str(exc)}), 500
 
 
@@ -215,5 +241,70 @@ def teardown_all():
     return jsonify({"status": "ok", "stopped": stopped})
 
 
+def _validate_images():
+    """
+    Validate that all required Docker images exist before starting.
+    Returns True if all images are present, False otherwise.
+    """
+    client = _get_docker()
+    if not client:
+        log.error("[startup] Docker daemon unavailable — cannot validate images")
+        return False
+
+    missing = []
+    for img in ALLOWED_IMAGES:
+        try:
+            client.images.get(img)
+            log.info("[startup] Image OK: %s", img)
+        except Exception:
+            missing.append(img)
+
+    if missing:
+        log.error("[startup] Missing Docker images: %s", missing)
+        log.error("[startup] Run: bash scripts/build_images.sh")
+        return False
+
+    log.info("[startup] All %d required images present", len(ALLOWED_IMAGES))
+    return True
+
+
+def _startup_cleanup():
+    """
+    Clean up any leftover containers from previous runs.
+    Prevents name collisions and stale container references.
+    """
+    client = _get_docker()
+    if not client:
+        return
+
+    log.info("[startup] Cleaning leftover containers...")
+    cleaned = 0
+    for c in client.containers.list(all=True):
+        if c.name.startswith('sm_'):
+            try:
+                c.stop(timeout=1)
+                c.remove(force=True)
+                cleaned += 1
+            except Exception as exc:
+                log.warning("[startup] Could not clean %s: %s", c.name, exc)
+
+    if cleaned > 0:
+        log.info("[startup] Cleaned %d leftover container(s)", cleaned)
+    else:
+        log.info("[startup] No leftover containers found")
+
+
 if __name__ == "__main__":
+    log.info("=" * 60)
+    log.info("ShadowMesh Orchestrator starting...")
+    log.info("=" * 60)
+
+    # Pre-flight checks
+    _startup_cleanup()
+
+    if not _validate_images():
+        log.error("[startup] Image validation FAILED — orchestrator will reject spawn requests")
+        log.error("[startup] Starting anyway to allow health checks, but spawning will fail")
+
+    log.info("[startup] Orchestrator ready on port 9000")
     app.run(host="0.0.0.0", port=9000, debug=False)

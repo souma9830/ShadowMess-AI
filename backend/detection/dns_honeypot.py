@@ -37,6 +37,7 @@ class DNSHoneypot:
         self.interface_ip = interface_ip
         self.callback = callback
         self._running = False
+        self._started_ok = False   # Fix #7: tracks whether bind succeeded
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._query_log: list = []
         self._log_lock = threading.Lock()
@@ -80,13 +81,15 @@ class DNSHoneypot:
         except Exception as e:
             print(f'[DNS Honeypot] handler error: {e}')
 
-    def start(self, loop: asyncio.AbstractEventLoop):
+    def start(self, loop: asyncio.AbstractEventLoop) -> bool:
+        """Start the DNS honeypot thread.  Returns True if bind succeeded, False otherwise."""
         if not _DNSLIB_AVAILABLE:
             print('[DNS Honeypot] Disabled — dnslib not available. Run: pip install dnslib')
-            return
+            return False
 
         self._loop = loop
         self._running = True
+        started_event = threading.Event()
 
         def run():
             try:
@@ -94,6 +97,8 @@ class DNSHoneypot:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 sock.bind(('0.0.0.0', 53))
                 sock.settimeout(1.0)
+                self._started_ok = True
+                started_event.set()           # signal bind success
                 print('[DNS] Honeypot listening on UDP :53')
                 while self._running:
                     try:
@@ -107,11 +112,17 @@ class DNSHoneypot:
                         continue
                 sock.close()
             except OSError as e:
+                # Fix #7: signal failure so start() can return False and main.py can alert
                 print(f'[DNS Honeypot] Failed to bind UDP :53 — {e}')
                 print('[DNS Honeypot] Disabled. Needs root/sudo, or port 53 is taken by systemd-resolved.')
                 self._running = False
+                self._started_ok = False
+                started_event.set()           # signal bind failure
 
-        threading.Thread(target=run, daemon=True).start()
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        started_event.wait(timeout=2.0)       # wait up to 2s for bind result
+        return self._started_ok
 
     def get_query_log(self) -> list:
         with self._log_lock:

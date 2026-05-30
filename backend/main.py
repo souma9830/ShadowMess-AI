@@ -1,3 +1,7 @@
+import os
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import socketio
 import asyncio
 import time
@@ -152,14 +156,68 @@ async def lifespan(app: FastAPI):
 
     dns_honeypot = init_dns_honeypot(interface_ip=interface, callback=on_dns_query)
     dns_honeypot.start(loop)
+
+    # Task 11.3: Initialise ProjectionSensor for Tier-2 projected nodes
+    from backend.deception.projection_sensor import ProjectionSensor
+    import backend.deception.projection_sensor as _ps_module
+
+    sensor = ProjectionSensor(interface=interface, event_loop=loop)
+    _ps_module.projection_sensor = sensor
+    sensor.start()
+
+    async def _drain_projection_events():
+        """Forward ProjectionSensor events to Socket.IO."""
+        _event_map = {
+            "arp_hit":       EVENTS['PROJECTION_ARP_HIT'],
+            "port_scan":     EVENTS['PROJECTION_PORT_SCAN'],
+            "service_probe": EVENTS['PROJECTION_SERVICE_PROBE'],
+        }
+        while True:
+            event = await sensor.event_queue.get()
+            sio_event = _event_map.get(event.event_type, EVENTS['PROJECTION_PORT_SCAN'])
+            try:
+                await sio.emit(sio_event, {
+                    "source_ip":      event.source_ip,
+                    "target_ip":      event.target_ip,
+                    "target_node_id": event.target_node_id,
+                    "ports_hit":      event.ports_hit,
+                    "timestamp":      event.timestamp,
+                    "detail":         event.detail,
+                })
+            except Exception as exc:
+                print(f"[projection] Socket.IO emit failed: {exc}")
+
+    asyncio.create_task(_drain_projection_events())
+
+    # Phase 12.2: Initialize cloud intelligence with Socket.IO and Slack
+    from backend.api.cloud_routes import init_cloud_intel
+    init_cloud_intel(
+        sio=sio,
+        slack_alert_fn=alerting_slack.send_slack_alert,
+        profile_store=routes.attacker_profiles,
+    )
+
+    # Start orchestrator health monitor
+    from backend.deception.container_manager import start_orchestrator_health_monitor
+    asyncio.create_task(start_orchestrator_health_monitor(sio, loop))
+
+    # Phase 12.3: Load RL topology optimizer Q-table
+    from backend.ai.rl_topology import rl_optimizer
+    rl_optimizer.load()
+
     print("ShadowMesh backend online")
     yield
     # Shutdown
     detector.stop()
     dns_honeypot.stop()
+    sensor.stop()
     await container_manager.teardown_all()
     await neo4j_client.close()
-    
+
+    # Phase 12.3: Persist RL Q-table on shutdown
+    from backend.ai.rl_topology import rl_optimizer as _rl_opt
+    _rl_opt.save()
+
     from backend.database.redis_client import redis_client
     await redis_client.close()
 
@@ -173,6 +231,10 @@ async def global_exception_handler(request, exc):
     return JSONResponse(status_code=500, content={"error": str(exc)})
 
 app.include_router(api_router, prefix="/api")
+
+# Phase 12.2: Register cloud deception routes
+from backend.api.cloud_routes import router as cloud_router, init_cloud_intel
+app.include_router(cloud_router, prefix="/api")
 
 socket_app = socketio.ASGIApp(sio, other_asgi_app=app)
 

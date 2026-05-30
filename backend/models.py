@@ -50,6 +50,16 @@ class FakeCredential(BaseModel):
     accessed: bool = False
     accessed_at: Optional[float] = None
 
+class ProjectionEvent(BaseModel):
+    """Structured event from a Tier-2 projected node interaction (Task 11.3)."""
+    event_type:     str       # "arp_hit" | "port_scan" | "service_probe"
+    source_ip:      str
+    target_ip:      str
+    target_node_id: str
+    ports_hit:      List[int]
+    timestamp:      float
+    detail:         str
+
 class CanaryToken(BaseModel):
     token_id: str          # unique UUID
     node_id: str           # which fake container it's planted in

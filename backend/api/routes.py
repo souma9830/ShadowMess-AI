@@ -167,9 +167,9 @@ async def _run_profiling_pipeline(action: AttackerAction, actions_for_ip: list):
                 payload = current_topology.model_dump()
                 payload['sequence'] = _event_sequence
                 topo_to_save = current_topology.model_copy(deep=True)
-            
+
             await redis_client.save_topology(topo_to_save)
-                
+
             if sio:
                 await sio.emit(EVENTS['TOPOLOGY_UPDATE'], payload)
 
@@ -227,7 +227,7 @@ async def attacker_action(action: AttackerAction):
         _event_sequence += 1
         sequence = _event_sequence
         actions_snapshot = list(attacker_actions[action.attacker_ip])
-        
+
     await redis_client.save_action(action.attacker_ip, action)
 
     if sio:
@@ -498,3 +498,49 @@ async def download_decoy_doc(token_id: str, filename: str, request: Request):
         raise HTTPException(status_code=404, detail="Not found")
 
     entry = doc_generator.get_document(token_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # Validate filename matches stored value — prevents path traversal
+    if entry.filename != filename:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # Capture attacker IP
+    raw_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.client.host
+    try:
+        attacker_ip = str(ipaddress.ip_address(raw_ip))
+    except ValueError:
+        attacker_ip = request.client.host or "unknown"
+
+    # Fire data_access event — document download is high-value intelligence
+    action = AttackerAction(
+        attacker_ip    = attacker_ip,
+        action_type    = "data_access",
+        target_node_id = token.node_id,
+        detail         = f"Decoy document downloaded: {filename}",
+        timestamp      = time.time(),
+    )
+    async with state_lock:
+        attacker_actions[attacker_ip].append(action)
+        if len(attacker_actions[attacker_ip]) > _ACTION_LIST_MAX:
+            attacker_actions[attacker_ip] = attacker_actions[attacker_ip][-_ACTION_LIST_TRIM:]
+        _event_sequence += 1
+    asyncio.create_task(neo4j_client.log_action(action))
+    asyncio.create_task(redis_client.save_action(attacker_ip, action))
+
+    if sio:
+        try:
+            await sio.emit(EVENTS['ATTACKER_ACTION'], {
+                **action.model_dump(),
+                "sequence": _event_sequence,
+            })
+        except Exception as exc:
+            log.warning("[docs] Socket.IO emit failed: %s", exc)
+
+    log.info("[docs] %s downloaded %s (token %s)", attacker_ip, filename, token_id)
+
+    return Response(
+        content=entry.data,
+        media_type=entry.mime,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

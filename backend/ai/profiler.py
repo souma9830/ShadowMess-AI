@@ -5,9 +5,15 @@ from typing import List
 import groq
 from backend.models import AttackerAction, AttackerProfile
 
-# Instantiate the Groq client gracefully
+# Fix #8: Broad invalid-key detection catches common placeholder patterns.
+# Valid Groq keys start with 'gsk_' and are at least 50 chars.
+_INVALID_KEY_PATTERNS = ('your_', 'mock', 'replace', 'todo', 'example', 'changeme', 'sk-')
 api_key = os.environ.get('GROQ_API_KEY', '')
-is_mock_mode = not api_key or api_key.startswith('your_') or api_key == 'MOCK_KEY'
+is_mock_mode = (
+    not api_key
+    or len(api_key) < 20
+    or any(p in api_key.lower() for p in _INVALID_KEY_PATTERNS)
+)
 
 if is_mock_mode:
     print("[WARNING] GROQ_API_KEY not set or invalid. ShadowMesh Attacker Profiler is running in LOCAL MOCK MODE.")
@@ -135,7 +141,12 @@ Profile this attacker.'''
         )
 
         raw = response.choices[0].message.content.strip()
-        
+
+        # Fix #20: Guard against oversized LLM response BEFORE json.loads()
+        # to prevent memory exhaustion from a malicious or runaway response.
+        if len(raw) > 4096:
+            raise ValueError(f"LLM response too large ({len(raw)} chars) — rejecting")
+
         # Strip any accidental markdown fences
         if raw.startswith('```'):
             parts = raw.split('```')
@@ -145,13 +156,8 @@ Profile this attacker.'''
                 raw = parts[0]
             if raw.startswith('json'):
                 raw = raw[4:]
-        
+
         raw = raw.strip()
-        
-        # Guard against unbounded raw LLM response lengths (M8)
-        if len(raw) > 4096:
-            raise ValueError("Unbounded LLM response size detected")
-            
         data = json.loads(raw)
         
         # Safely extract tools_detected as a list
