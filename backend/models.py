@@ -16,6 +16,7 @@ class NetworkNode(BaseModel):
     os: str
     is_fake: bool = True
     container_id: Optional[str] = None
+    tier: Optional[str] = None # Added for projection tier compatibility
 
 class AttackerAction(BaseModel):
     attacker_ip: str
@@ -28,7 +29,7 @@ class AttackerAction(BaseModel):
 
 class AttackerProfile(BaseModel):
     attacker_ip: str
-    skill_level: str   # 'Script Kiddie' | 'Intermediate' | 'Advanced' | 'Nation-State APT'
+    skill_level: str   # 'Script Kiddie' | 'Intermediate' | 'Advanced' | 'Nation-State APT' | 'Unknown'
     objective: str
     apt_resemblance: str
     tools_detected: List[str]

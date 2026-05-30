@@ -4,15 +4,13 @@ env/
 .env
 .venv/
 
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
 
-# Distribution / packaging
+# Build/Dist
 build/
 develop-eggs/
 dist/
@@ -29,22 +27,19 @@ wheels/
 .installed.cfg
 *.egg
 
-# Installer logs
+# Frontend / JS
+node_modules/
+
+# Logs & scratch
 pip-log.txt
 pip-delete-this-directory.txt
+scratch/
+brain/
+enterprise-attack.json
 
-# PyBuilder
-target/
-
-# IDEs and Editors
+# IDEs / OS
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# MacOS
 .DS_Store
-
-# Temporary scratch space
-scratch/
-brain/
