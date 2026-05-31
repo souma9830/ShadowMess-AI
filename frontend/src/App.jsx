@@ -10,12 +10,14 @@ import AttackerList from './components/AttackerList';
 import AttackerProfile from './components/AttackerProfile';
 import DnsIntelligence from './components/DnsIntelligence';
 import MitreHeatmap from './components/MitreHeatmap';
+import AttackerInterests from './components/AttackerInterests';
 import { motion, AnimatePresence } from 'framer-motion';
 
 function App() {
   const { isConnected } = useSocketEvents();
   const isDeceptionActive = useShadowStore(state => state.isDeceptionActive);
   const activeBreadcrumbs = useShadowStore(state => state.activeBreadcrumbs);
+  const [rightTab, setRightTab] = React.useState('interests');
 
   // Dwell time timer — ticks every second while deception is active
   useEffect(() => {
@@ -205,11 +207,34 @@ function App() {
               <DnsIntelligence />
             </ErrorBoundary>
           </div>
-          <div className="h-64 shrink-0 overflow-hidden">
-            <ErrorBoundary componentName="MitreHeatmap">
-              <MitreHeatmap />
-            </ErrorBoundary>
-          </div>
+          <div className="h-64 shrink-0 overflow-hidden flex flex-col border-t border-[#2a2a2a]">
+              <div className="flex shrink-0 border-b border-[#2a2a2a]">
+                {[['interests', 'Interests'], ['mitre', 'MITRE']].map(([id, label]) => (
+                  <button
+                    key={id}
+                    onClick={() => setRightTab(id)}
+                    className={`flex-1 text-[10px] font-bold uppercase tracking-wider py-1.5 transition-colors ${
+                      rightTab === id
+                        ? 'text-white bg-[#1a1a1a] border-b-2 border-shadowRed'
+                        : 'text-gray-500 hover:text-gray-300 bg-[#0d0d0d]'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex-1 overflow-hidden">
+                {rightTab === 'interests' ? (
+                  <ErrorBoundary componentName="AttackerInterests">
+                    <AttackerInterests />
+                  </ErrorBoundary>
+                ) : (
+                  <ErrorBoundary componentName="MitreHeatmap">
+                    <MitreHeatmap />
+                  </ErrorBoundary>
+                )}
+              </div>
+            </div>
         </aside>
       </main>
     </div>

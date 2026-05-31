@@ -31,9 +31,9 @@ export function useSocketEvents() {
 
     socket.on(EVENTS.ATTACKER_ACTION, (data) => {
       const store = useShadowStore.getState();
-      // Check BEFORE addAction so we read the pre-mutation state
       const alreadyExplored = store.actions.some(a => a.target_node_id === data.target_node_id);
       store.addAction(data);
+      store.trackInterest(data.action_type, data.detail);
       if (data.action_type === 'login_attempt') store.incrementStat('loginAttempts');
       if (data.action_type === 'command_exec') store.incrementStat('commandsRun');
       if (!alreadyExplored) store.incrementStat('nodesExplored');
