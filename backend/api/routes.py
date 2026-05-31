@@ -29,7 +29,7 @@ _ACTION_LIST_TRIM = 500
 _MAX_TRACKED_IPS = 1000
 
 # Groq profiling rate-limit: run every N actions per IP
-_PROFILING_EVERY_N_ACTIONS = 3
+_PROFILING_EVERY_N_ACTIONS = 1
 
 router = APIRouter()
 
@@ -268,8 +268,42 @@ async def attacker_action(action: AttackerAction):
     return {"status": "logged"}
 
 
-@router.get("/topology/current")
-async def get_topology_current():
+@router.post("/admin/reset")
+async def reset_state():
+    """Hard reset all in-memory state and Redis — call before a fresh demo run."""
+    global current_topology, attacker_profiles, attacker_actions, _event_sequence, _deception_activated, _topology_spawning
+    async with state_lock:
+        current_topology = TopologySnapshot(nodes=[], edges=[], generation=0)
+        attacker_profiles.clear()
+        attacker_actions.clear()
+        _event_sequence = 0
+        _deception_activated = False
+        _topology_spawning = False
+
+    # Clear Redis
+    try:
+        conn = await redis_client._get_conn()
+        keys = await conn.keys("session:*")
+        keys += await conn.keys("breadcrumb:*")
+        if keys:
+            await conn.delete(*keys)
+        await conn.delete("system:topology")
+    except Exception as e:
+        log.warning("[reset] Redis clear failed: %s", e)
+
+    # Tear down all honeypot containers
+    from backend.deception.container_manager import teardown_all
+    await teardown_all()
+
+    if sio:
+        await sio.emit(EVENTS['TOPOLOGY_UPDATE'], {"nodes": [], "edges": [], "generation": 0})
+        await sio.emit(EVENTS['ALERT'], {"message": "System reset — ready for fresh demo", "severity": "info"})
+
+    log.info("[reset] Full state reset complete")
+    return {"status": "reset", "message": "All state cleared. Ready for fresh demo."}
+
+
+
     return current_topology
 
 @router.get("/attacker/profile/{attacker_ip}")
