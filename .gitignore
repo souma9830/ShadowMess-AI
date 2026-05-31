@@ -47,3 +47,6 @@ enterprise-attack.json
 # Runtime artifacts
 *.npy
 pytest.ini
+
+# Ignore attacker script
+scripts/remote_attacker.py
