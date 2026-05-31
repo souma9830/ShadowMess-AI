@@ -1,58 +1,135 @@
 # ShadowMesh
 
-## 🌟 The Significance & Solution
-Modern cyber defense is overwhelmingly static and reactive—analysts spend hours sifting through logs long after the attacker has breached the perimeter. **ShadowMesh** is a next-generation, AI-driven active defense platform. Instead of merely logging attacks, it dynamically weaves a deceptive network fabric (a honeypot mesh) in real-time around the attacker. 
+## The Significance & Solution
 
-As the attacker attempts to pivot or escalate privileges, ShadowMesh analyzes their behavior using LLM-based profiling, maps their actions to the MITRE ATT&CK framework, and mutates the network topology on-the-fly to trap them in a maze of fake assets.
+Modern cyber defense is overwhelmingly static and reactive — analysts spend hours sifting through logs long after the attacker has breached the perimeter. **ShadowMesh** is a next-generation, AI-driven active defense platform. Instead of merely logging attacks, it dynamically weaves a deceptive network fabric around the attacker in real time.
 
-## 🛠 Tech Stack
-- **Backend**: Python, FastAPI, WebSockets (Socket.IO), Scapy (Network Packet Sniffing)
-- **AI & Analytics**: Groq LLM API (Attacker Profiling), NetworkX (Topology Generation), `scikit-learn` IsolationForest (Anomaly Detection)
-- **Database & State**: Neo4j (Attack Graph Database), Redis (Session Persistence & Hydration)
-- **Frontend**: React, Vite, Zustand (State Management), `react-force-graph-2d` (Live Topology), D3.js (MITRE Heatmap)
-- **Infrastructure**: Docker Compose, Container Orchestration (Deception Nodes)
+As the attacker pivots and escalates, ShadowMesh profiles their behavior using LLM-based analysis, maps every action to the MITRE ATT&CK framework, and mutates the network topology on-the-fly to trap them in a maze of fake enterprise assets — collecting intelligence the entire time.
 
-## 🚀 The Biggest Technical Challenge We Solved
-**State Synchronization Across Asynchronous, High-Velocity Subsystems**
-Bridging low-level, synchronous network sniffing (Scapy) with a high-concurrency asynchronous web framework (FastAPI) and real-time WebSockets without dropping packets or creating race conditions was incredibly difficult. 
+---
 
-We solved this by decoupling the ingestion layer from the processing layer. Scapy runs in a dedicated thread pool, pushing events to the `asyncio` event loop. We implemented a strict asynchronous locking mechanism (`state_lock`) and Redis hydration to ensure that our NetworkX topology, Neo4j attack graph, and the React frontend's state remain perfectly synchronized, even when the topology mutates hundreds of nodes under heavy load.
+## Tech Stack
 
-## 🗺 System Architecture & Attacker Flow
+- **Backend**: Python 3.13, FastAPI, Socket.IO (ASGI), Scapy (packet sniffing), Asyncio
+- **AI & Analytics**: Groq LLM (attacker profiling), NetworkX + Barabási–Albert graph model (topology), scikit-learn IsolationForest (anomaly detection), Q-learning RL optimizer (topology selection)
+- **Deception Layer**: 10 fake Docker honeypots (HTTP, DB, Auth/AD, SMB, API, RDP, MQTT, Redis, Elasticsearch, SSH), canary tokens, fake credentials, synthetic personas, decoy documents
+- **Intelligence**: MITRE ATT&CK tagging, STIX 2.1 export, PDF threat reports, Neo4j attack graph, SIEM integrations (Splunk, Elastic, Sentinel, CEF syslog)
+- **Database & State**: Neo4j (attack graph), Redis (session persistence & hydration)
+- **Frontend**: React, Vite, Zustand, react-force-graph-2d (live topology), Framer Motion
+- **Infrastructure**: Docker Compose, Flask orchestrator sidecar (sole Docker socket holder)
+
+---
+
+## System Architecture
 
 ```mermaid
 sequenceDiagram
     participant A as Attacker
     participant S as Scapy / DNS Honeypot
     participant B as FastAPI Backend
-    participant AI as AI Engine (Groq/NetworkX)
+    participant AI as AI Engine (Groq / RL / IsolationForest)
     participant D as Deception Fabric (Docker)
     participant DB as Neo4j & Redis
     participant F as React Dashboard
 
     A->>S: 1. Network Recon / DNS Query
-    S->>B: 2. Intercept & Forward (Async)
-    B->>AI: 3. Trigger Topology Generation
+    S->>B: 2. Intercept & Forward (async thread-safe)
+    B->>AI: 3. Trigger Topology Generation (RL-optimized)
     AI-->>B: 4. Return Barabási–Albert Graph
-    B->>D: 5. Spawn Fake Containers (Honeypots)
+    B->>D: 5. Spawn Honeypots + Inject Personas & Documents
     B->>F: 6. Broadcast Deception Active (WebSockets)
-    A->>D: 7. Interacts with Fake Asset (SSH/Web)
+    A->>D: 7. Interacts with Fake Asset
     D->>B: 8. Send Action Telemetry
-    B->>AI: 9. Profile Attacker (Skill, Objective)
-    B->>DB: 10. Persist Session & MITRE Tags
-    B->>F: 11. Live Dashboard Update (Heatmap, Graph)
-    AI->>B: 12. Trigger Topology Mutation (Fog of War)
-    B->>D: 13. Reshuffle Network
+    B->>AI: 9. Profile Attacker (Groq LLM / local heuristic)
+    B->>DB: 10. Persist Session, MITRE Tags, Attack Graph
+    B->>F: 11. Live Dashboard Update
+    AI->>B: 12. Detect Fingerprinting → Trigger Mutation
+    B->>D: 13. Reshuffle Network (Fog of War)
 ```
 
-## 🔒 Security & Hardening
-- **Fault-Tolerant State Recovery**: Redis-backed session persistence ensures that backend crashes or updates do not wipe active attacker tracking.
-- **Resilient Database Connections**: Custom Neo4j connection loops handle database startup latency and network blips gracefully.
-- **Pre-Demo Teardown Automation**: Automated container cleanup on application startup prevents dangling honeypots or resource exhaustion.
-- **AI Rate-Limiting**: Heuristics trigger LLM profiling modulo 3 actions per IP, preventing API rate-limit exhaustion and controlling cost.
-- **Local Anomaly Scoring**: Fast, pre-trained `IsolationForest` models evaluate zero-day anomalies locally without exposing sensitive network telemetry to external APIs.
+---
 
-## 🔮 Future Scope
-- **STIX/TAXII Threat Intel Export**: Automated generation of standardized threat intelligence reports to share with external SIEMs.
-- **Multi-Cloud Distributed Mesh**: Extending the Docker orchestrator to span AWS/GCP instances, creating a geographically distributed deception network.
-- **Autonomous Credential Harvesting**: Dynamically generating hyper-realistic, personalized fake documents based on the attacker's observed LLM profile to lure them deeper into the mesh.
+## Key Features
+
+**Deception Fabric**
+- Barabási–Albert scale-free topology generation (9–14 nodes per generation)
+- Tier-1 nodes: full Docker honeypots with real network services
+- Tier-2 nodes: lightweight ARP/TCP projection sensors (no container overhead)
+- Adaptive lure spawning — deploys targeted honeypots based on attacker objective
+- Topology mutation triggered by OS fingerprinting detection
+
+**Human Deception (Phase 11)**
+- Synthetic employee personas injected into each honeypot (name, role, department, bash history, SSH keys, AWS credentials)
+- Realistic decoy documents (Payroll, AWS keys, VPN credentials, Engineering roadmaps) with embedded canary URLs
+- DNS honeypot with planted canary hostnames
+- 10 protocol honeypots: HTTP, DB, Auth/AD, SMB, API Gateway, RDP, MQTT, Redis, Elasticsearch, SSH
+
+**AI Intelligence**
+- Groq LLM attacker profiling (skill level, objective, APT resemblance, tools detected)
+- Local heuristic fallback when Groq API unavailable
+- IsolationForest ML anomaly scoring on every action
+- Q-learning RL optimizer selects topology configuration to maximize attacker engagement
+- Real-time MITRE ATT&CK technique tagging
+
+**Intelligence Export**
+- STIX 2.1 threat intelligence bundle export
+- PDF threat report generation
+- Neo4j attack path visualization
+- SIEM integrations: Splunk HEC, Elasticsearch, Microsoft Sentinel, CEF syslog
+
+**Dashboard**
+- Live force-directed network graph with attacker glow overlays
+- Real-time alert feed (critical / warning / canary / info)
+- Attacker profile panel (skill, APT resemblance, ML score, confidence, tools)
+- MITRE ATT&CK heatmap
+- Attacker interests bar chart (credentials, AD/admins, cloud, finance, lateral)
+- DNS intelligence panel with canary detection
+- Breadcrumb agent tracking
+
+---
+
+## Quickstart
+
+```bash
+# 1. Build honeypot images (one-time, ~5 min)
+bash scripts/build_images.sh
+
+# 2. Start everything
+docker-compose up --build
+
+# 3. Open dashboard
+# http://localhost:5173
+
+# 4. Verify health
+curl http://localhost:8000/health
+```
+
+**Ports:**
+
+| Service | URL |
+|---|---|
+| Dashboard | http://localhost:5173 |
+| Backend API | http://localhost:8000 |
+| Orchestrator | http://localhost:9000 |
+| Neo4j Browser | http://localhost:7474 |
+
+---
+
+## Biggest Technical Challenge
+
+**State synchronization across asynchronous, high-velocity subsystems.**
+
+Bridging low-level synchronous network sniffing (Scapy) with a high-concurrency async web framework (FastAPI) and real-time WebSockets — without dropping packets or creating race conditions — required careful architecture.
+
+Scapy runs in a dedicated daemon thread, scheduling coroutines onto the asyncio event loop via `run_coroutine_threadsafe`. All shared state (topology, attacker profiles, action lists) is guarded by a single `asyncio.Lock`. Redis hydration ensures state survives backend restarts. The orchestrator sidecar holds the Docker socket exclusively, so the backend never blocks on container I/O.
+
+---
+
+## Security Hardening
+
+- Docker socket isolated to orchestrator sidecar — backend has zero Docker access
+- All honeypot containers run with `--read-only`, `cap_drop=ALL`, `no-new-privileges`, 64MB memory limit
+- Attacker IP validated via `ipaddress.ip_address()` before use — no header injection
+- LLM responses size-capped and sanitized before `json.loads()`
+- Node IDs validated against `[a-zA-Z0-9_-]` regex before Docker operations
+- X-Forwarded-For header parsed and validated, not trusted blindly

@@ -86,6 +86,22 @@ class RedisClient:
 
         return actions_map, profiles_map, topology
 
+    # --- Breadcrumb agent heartbeats (Phase 13.2) ---
+    async def save_breadcrumb_heartbeat(self, agent_host: str, planted_paths: list, timestamp: float):
+        conn = await self._get_conn()
+        import json
+        key = f"breadcrumb:agent:{agent_host}"
+        await conn.set(key, json.dumps({
+            "agent_host": agent_host,
+            "planted_paths": planted_paths,
+            "timestamp": timestamp,
+        }), ex=300)
+
+    async def get_active_breadcrumb_count(self) -> int:
+        conn = await self._get_conn()
+        keys = await conn.keys("breadcrumb:agent:*")
+        return len(keys)
+
     async def close(self):
         """Properly close Redis connection pool."""
         if self._conn is not None:

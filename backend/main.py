@@ -152,7 +152,7 @@ async def lifespan(app: FastAPI):
 
     interface = detect_network_interface()
     detector = ReconDetector(interface=interface, callback=on_recon_detected)
-    detector.start(loop)
+    detector.start(loop, sio=sio)
 
     dns_honeypot = init_dns_honeypot(interface_ip=interface, callback=on_dns_query)
     dns_honeypot.start(loop)

@@ -31,9 +31,9 @@ export function useSocketEvents() {
 
     socket.on(EVENTS.ATTACKER_ACTION, (data) => {
       const store = useShadowStore.getState();
-      // Check BEFORE addAction so we read the pre-mutation state
       const alreadyExplored = store.actions.some(a => a.target_node_id === data.target_node_id);
       store.addAction(data);
+      store.trackInterest(data.action_type, data.detail);
       if (data.action_type === 'login_attempt') store.incrementStat('loginAttempts');
       if (data.action_type === 'command_exec') store.incrementStat('commandsRun');
       if (!alreadyExplored) store.incrementStat('nodesExplored');
@@ -80,6 +80,34 @@ export function useSocketEvents() {
       useShadowStore.getState().addDnsQuery(data);
     });
 
+    socket.on(EVENTS.AD_ENUMERATION, (data) => {
+      useShadowStore.getState().addAlert(
+        `AD enumeration detected from ${data.attacker_ip}: ${data.detail || data.query || ''}`,
+        'warning'
+      );
+    });
+
+    socket.on(EVENTS.CLOUD_CREDENTIAL_USED, (data) => {
+      useShadowStore.getState().addAlert(
+        `Cloud credential used by ${data.attacker_ip}: ${data.credential_type || data.detail || ''}`,
+        'critical'
+      );
+    });
+
+    socket.on(EVENTS.CLOUD_ACCOUNT_DISCOVERY, (data) => {
+      useShadowStore.getState().addAlert(
+        `Cloud account discovery from ${data.attacker_ip}: ${data.detail || ''}`,
+        'warning'
+      );
+    });
+
+    socket.on(EVENTS.CLOUD_API_ACCESS, (data) => {
+      useShadowStore.getState().addAlert(
+        `Cloud API access from ${data.attacker_ip}: ${data.endpoint || data.detail || ''}`,
+        'warning'
+      );
+    });
+
     socket.on(EVENTS.BREADCRUMB_UPDATE, (data) => {
       useShadowStore.getState().setBreadcrumbs(data.active_count);
     });
@@ -112,6 +140,10 @@ export function useSocketEvents() {
       socket.off(EVENTS.LURE_SPAWNED);
       socket.off(EVENTS.THREAT_SCORE);
       socket.off(EVENTS.DNS_QUERY);
+      socket.off(EVENTS.AD_ENUMERATION);
+      socket.off(EVENTS.CLOUD_CREDENTIAL_USED);
+      socket.off(EVENTS.CLOUD_ACCOUNT_DISCOVERY);
+      socket.off(EVENTS.CLOUD_API_ACCESS);
       socket.off(EVENTS.BREADCRUMB_UPDATE);
       socket.off(EVENTS.PROJECTION_ARP_HIT);
       socket.off(EVENTS.PROJECTION_PORT_SCAN);

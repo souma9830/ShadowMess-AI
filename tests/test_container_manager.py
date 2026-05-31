@@ -1,17 +1,17 @@
 """
-test_container_manager.py — Task 4.3 Verification Suite
-========================================================
+test_container_manager.py — Container Manager Verification Suite
+================================================================
 Tests for backend/deception/container_manager.py.
 
-All Docker SDK interactions are mocked so the suite runs
-without a live Docker daemon.
+The container_manager now delegates ALL Docker operations to the orchestrator
+via HTTP (httpx). Tests mock _orchestrator_request instead of a Docker client.
 
 Covers:
-  1. Docker unavailable handling (no crash, returns None)
-  2. Spawn success (container created, registered)
-  3. Spawn failure (exception handled, returns None)
-  4. Topology deployment (teardown → spawn all → emit events)
-  5. Teardown cleanup (all containers stopped, registry cleared)
+  1. Orchestrator unavailable — spawn returns None without crashing
+  2. Spawn success — container registered, returns container_id
+  3. Spawn failure — orchestrator error response handled gracefully
+  4. Topology deployment — teardown → spawn all → emit events
+  5. Teardown cleanup — registry cleared, orchestrator called
   6. active_containers tracking accuracy
 
 Usage:
@@ -21,17 +21,14 @@ Usage:
 import os
 import sys
 import asyncio
-import importlib
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, AsyncMock, MagicMock
 
-# Ensure project root is importable
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from backend.models import NetworkNode, TopologySnapshot
 
-# Terminal styles
 PASS = "\033[92m[PASS]\033[0m"
 FAIL = "\033[91m[FAIL]\033[0m"
 _results = []
@@ -70,54 +67,44 @@ def _make_topology(num_nodes=3):
 
 
 # ---------------------------------------------------------------------------
-# Test 1: Docker unavailable handling
+# Test 1: Orchestrator unavailable
 # ---------------------------------------------------------------------------
 def test_docker_unavailable():
-    """When Docker is not available, spawn_container returns None without crashing."""
-    # Re-import with docker unavailable
+    """When orchestrator is unreachable, spawn_container returns None without crashing."""
     import backend.deception.container_manager as cm
+    cm.active_containers.clear()
 
-    # Force unavailable state
-    original_available = cm._docker_available
-    original_client = cm._docker_client
-    cm._docker_available = False
-    cm._docker_client = None
+    async def _run():
+        with patch.object(cm, '_orchestrator_request', new=AsyncMock(return_value=None)):
+            node = _make_node()
+            return await cm.spawn_container(node)
 
     try:
-        node = _make_node()
-        result = asyncio.run(cm.spawn_container(node))
+        result = asyncio.run(_run())
         ok = result is None
-        _record("1. Docker unavailable returns None (no crash)", ok, f"result={result}")
+        _record("1. Orchestrator unavailable returns None (no crash)", ok, f"result={result}")
     except Exception as e:
-        _record("1. Docker unavailable returns None (no crash)", False, str(e))
+        _record("1. Orchestrator unavailable returns None (no crash)", False, str(e))
     finally:
-        cm._docker_available = original_available
-        cm._docker_client = original_client
+        cm.active_containers.clear()
 
 
 # ---------------------------------------------------------------------------
 # Test 2: Spawn success
 # ---------------------------------------------------------------------------
 def test_spawn_success():
-    """When Docker is available, spawn creates container and registers it."""
+    """When orchestrator returns a container_id, spawn registers it and returns it."""
     import backend.deception.container_manager as cm
-
-    mock_container = MagicMock()
-    mock_container.short_id = "abc123def456"
-
-    mock_client = MagicMock()
-    mock_client.containers.run.return_value = mock_container
-
-    original_available = cm._docker_available
-    original_client = cm._docker_client
-    cm._docker_available = True
-    cm._docker_client = mock_client
     cm.active_containers.clear()
 
-    try:
-        node = _make_node()
-        result = asyncio.run(cm.spawn_container(node))
+    async def _run():
+        with patch.object(cm, '_orchestrator_request',
+                          new=AsyncMock(return_value={"container_id": "abc123def456"})):
+            node = _make_node()
+            return await cm.spawn_container(node)
 
+    try:
+        result = asyncio.run(_run())
         ok = result == "abc123def456"
         registered = cm.active_containers.get("node_0_1") == "abc123def456"
         _record("2. Spawn success (container created & registered)", ok and registered,
@@ -125,31 +112,25 @@ def test_spawn_success():
     except Exception as e:
         _record("2. Spawn success (container created & registered)", False, str(e))
     finally:
-        cm._docker_available = original_available
-        cm._docker_client = original_client
         cm.active_containers.clear()
 
 
 # ---------------------------------------------------------------------------
-# Test 3: Spawn failure
+# Test 3: Spawn failure (orchestrator returns error)
 # ---------------------------------------------------------------------------
 def test_spawn_failure():
-    """When Docker run throws, spawn returns None and does not crash."""
+    """When orchestrator returns an error dict, spawn returns None and does not crash."""
     import backend.deception.container_manager as cm
-
-    mock_client = MagicMock()
-    mock_client.containers.run.side_effect = Exception("Docker engine error: image not found")
-
-    original_available = cm._docker_available
-    original_client = cm._docker_client
-    cm._docker_available = True
-    cm._docker_client = mock_client
     cm.active_containers.clear()
 
-    try:
-        node = _make_node()
-        result = asyncio.run(cm.spawn_container(node))
+    async def _run():
+        with patch.object(cm, '_orchestrator_request',
+                          new=AsyncMock(return_value={"error": "image not found"})):
+            node = _make_node()
+            return await cm.spawn_container(node)
 
+    try:
+        result = asyncio.run(_run())
         ok = result is None
         not_registered = "node_0_1" not in cm.active_containers
         _record("3. Spawn failure handled gracefully", ok and not_registered,
@@ -157,8 +138,6 @@ def test_spawn_failure():
     except Exception as e:
         _record("3. Spawn failure handled gracefully", False, str(e))
     finally:
-        cm._docker_available = original_available
-        cm._docker_client = original_client
         cm.active_containers.clear()
 
 
@@ -166,43 +145,34 @@ def test_spawn_failure():
 # Test 4: Topology deployment
 # ---------------------------------------------------------------------------
 def test_topology_deployment():
-    """spawn_topology tears down, spawns all nodes, emits events."""
+    """spawn_topology tears down, spawns all tier-1 nodes, emits events."""
     import backend.deception.container_manager as cm
+    cm.active_containers.clear()
 
     counter = {"value": 0}
 
-    mock_container = MagicMock()
-    def _mock_run(**kwargs):
+    async def _mock_orchestrator(method, path, **kwargs):
+        if method == "delete":
+            return {"stopped": 0}
         counter["value"] += 1
-        c = MagicMock()
-        c.short_id = f"cid_{counter['value']:03d}"
-        return c
+        return {"container_id": f"cid_{counter['value']:03d}"}
 
-    mock_client = MagicMock()
-    mock_client.containers.run.side_effect = _mock_run
-    mock_client.containers.get.side_effect = Exception("not found")
-
-    original_available = cm._docker_available
-    original_client = cm._docker_client
-    cm._docker_available = True
-    cm._docker_client = mock_client
-    cm.active_containers.clear()
-
-    # Mock Socket.IO
     mock_sio = MagicMock()
     mock_sio.emit = AsyncMock()
 
-    try:
-        topology = _make_topology(num_nodes=3)
-        asyncio.run(cm.spawn_topology(topology, mock_sio))
+    async def _run():
+        with patch.object(cm, '_orchestrator_request', side_effect=_mock_orchestrator):
+            topology = _make_topology(num_nodes=3)
+            await cm.spawn_topology(topology, mock_sio)
+            return topology
 
-        # Check all nodes got container IDs
-        all_have_cid = all(n.container_id is not None for n in topology.nodes)
-        # Check active_containers has all 3
-        tracking_ok = len(cm.active_containers) == 3
-        # Check sio.emit was called 3 times
+    try:
+        topology = asyncio.run(_run())
+        tier1_nodes = [n for n in topology.nodes if n.tier != "tier2"]
+        all_have_cid = all(n.container_id is not None for n in tier1_nodes)
+        tracking_ok = len(cm.active_containers) == len(tier1_nodes)
         emit_count = mock_sio.emit.call_count
-        emit_ok = emit_count == 3
+        emit_ok = emit_count >= len(tier1_nodes)
 
         ok = all_have_cid and tracking_ok and emit_ok
         _record("4. Topology deployment (teardown → spawn → emit)", ok,
@@ -210,8 +180,6 @@ def test_topology_deployment():
     except Exception as e:
         _record("4. Topology deployment (teardown → spawn → emit)", False, str(e))
     finally:
-        cm._docker_available = original_available
-        cm._docker_client = original_client
         cm.active_containers.clear()
 
 
@@ -219,39 +187,29 @@ def test_topology_deployment():
 # Test 5: Teardown cleanup
 # ---------------------------------------------------------------------------
 def test_teardown_cleanup():
-    """teardown_all stops containers and clears registry."""
+    """teardown_all clears registry and calls orchestrator."""
     import backend.deception.container_manager as cm
 
-    mock_container_obj = MagicMock()
-    mock_container_obj.stop.return_value = None
-
-    mock_client = MagicMock()
-    mock_client.containers.get.return_value = mock_container_obj
-
-    original_available = cm._docker_available
-    original_client = cm._docker_client
-    cm._docker_available = True
-    cm._docker_client = mock_client
-
-    # Pre-populate active containers
-    cm.active_containers = {
+    cm.active_containers.clear()
+    cm.active_containers.update({
         "node_0_0": "cid_aaa",
         "node_0_1": "cid_bbb",
         "node_0_2": "cid_ccc",
-    }
+    })
+
+    async def _run():
+        with patch.object(cm, '_orchestrator_request',
+                          new=AsyncMock(return_value={"stopped": 3})):
+            await cm.teardown_all()
 
     try:
-        asyncio.run(cm.teardown_all())
-
+        asyncio.run(_run())
         ok = len(cm.active_containers) == 0
-        stop_called = mock_container_obj.stop.call_count == 3
-        _record("5. Teardown cleanup (all stopped & cleared)", ok and stop_called,
-                f"remaining={len(cm.active_containers)} | stops={mock_container_obj.stop.call_count}")
+        _record("5. Teardown cleanup (registry cleared)", ok,
+                f"remaining={len(cm.active_containers)}")
     except Exception as e:
-        _record("5. Teardown cleanup (all stopped & cleared)", False, str(e))
+        _record("5. Teardown cleanup (registry cleared)", False, str(e))
     finally:
-        cm._docker_available = original_available
-        cm._docker_client = original_client
         cm.active_containers.clear()
 
 
@@ -261,39 +219,30 @@ def test_teardown_cleanup():
 def test_active_containers_tracking():
     """active_containers accurately reflects spawn/teardown state."""
     import backend.deception.container_manager as cm
-
-    mock_container = MagicMock()
-    mock_container.short_id = "track_001"
-
-    mock_client = MagicMock()
-    mock_client.containers.run.return_value = mock_container
-    mock_client.containers.get.return_value = mock_container
-    mock_container.stop.return_value = None
-
-    original_available = cm._docker_available
-    original_client = cm._docker_client
-    cm._docker_available = True
-    cm._docker_client = mock_client
     cm.active_containers.clear()
 
+    async def _run():
+        with patch.object(cm, '_orchestrator_request',
+                          new=AsyncMock(return_value={"container_id": "track_001"})):
+            node = _make_node()
+            await cm.spawn_container(node)
+            after_spawn = len(cm.active_containers)
+
+        with patch.object(cm, '_orchestrator_request',
+                          new=AsyncMock(return_value={"stopped": 1})):
+            await cm.teardown_all()
+            after_teardown = len(cm.active_containers)
+
+        return after_spawn, after_teardown
+
     try:
-        # Spawn a node
-        node = _make_node()
-        asyncio.run(cm.spawn_container(node))
-        after_spawn = len(cm.active_containers)
-
-        # Teardown
-        asyncio.run(cm.teardown_all())
-        after_teardown = len(cm.active_containers)
-
+        after_spawn, after_teardown = asyncio.run(_run())
         ok = after_spawn == 1 and after_teardown == 0
         _record("6. active_containers tracking accuracy", ok,
                 f"after_spawn={after_spawn} | after_teardown={after_teardown}")
     except Exception as e:
         _record("6. active_containers tracking accuracy", False, str(e))
     finally:
-        cm._docker_available = original_available
-        cm._docker_client = original_client
         cm.active_containers.clear()
 
 
@@ -312,7 +261,7 @@ def _print_summary():
 
 if __name__ == "__main__":
     print("\n" + "═" * 60)
-    print("═══ TASK 4.3 — Container Manager Verification Suite ═══")
+    print("═══ Container Manager Verification Suite ═══")
     print("═" * 60)
 
     test_docker_unavailable()

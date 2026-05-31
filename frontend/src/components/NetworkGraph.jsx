@@ -64,6 +64,10 @@ export default function NetworkGraph() {
       case 'api_gateway': return '#378ADD';
       case 'mail_server': return '#D4537E';
       case 'workstation': return '#888780';
+      case 'smb_server': return '#C97B2A';
+      case 'mqtt_broker': return '#2AB5C9';
+      case 'redis_server': return '#C9392A';
+      case 'elasticsearch_node': return '#F5A623';
       default: return '#888780';
     }
   };
@@ -130,12 +134,17 @@ export default function NetworkGraph() {
             ctx.fill();
 
             const label = node.ip;
+            const typeLabel = node.nodeType?.replace(/_/g, ' ').toUpperCase() || '';
             const fontSize = 10 / globalScale;
             ctx.font = `${fontSize}px monospace`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
             ctx.fillText(label, node.x, node.y + 14);
+            const typeFontSize = 8 / globalScale;
+            ctx.font = `${typeFontSize}px monospace`;
+            ctx.fillStyle = 'rgba(255,255,255,0.35)';
+            ctx.fillText(typeLabel, node.x, node.y + 22);
           }}
           onNodeHover={setHoverNode}
         />

@@ -29,7 +29,7 @@ _ACTION_LIST_TRIM = 500
 _MAX_TRACKED_IPS = 1000
 
 # Groq profiling rate-limit: run every N actions per IP
-_PROFILING_EVERY_N_ACTIONS = 3
+_PROFILING_EVERY_N_ACTIONS = 1
 
 router = APIRouter()
 
@@ -157,12 +157,9 @@ async def _run_profiling_pipeline(action: AttackerAction, actions_for_ip: list):
         lure_node = await maybe_spawn_lure(profile, topo_snapshot, sio, topo_snapshot.generation)
         if lure_node:
             async with state_lock:
-                # Only append if topology hasn't been replaced by a mutation
-                if id(current_topology) == topo_id:
-                    current_topology.nodes.append(lure_node)
-                else:
-                    # Topology was mutated; add lure to new topology instead
-                    current_topology.nodes.append(lure_node)
+                # Always append to current_topology regardless of whether it was mutated —
+                # the lure container is already running and must be tracked.
+                current_topology.nodes.append(lure_node)
                 _event_sequence += 1
                 payload = current_topology.model_dump()
                 payload['sequence'] = _event_sequence
@@ -230,6 +227,10 @@ async def attacker_action(action: AttackerAction):
 
     await redis_client.save_action(action.attacker_ip, action)
 
+    # Phase 13.1: Fire SIEM integrations in background
+    from backend.integrations.siem import siem
+    asyncio.create_task(siem.send_all(action, attacker_profiles.get(action.attacker_ip)))
+
     if sio:
         payload = action.model_dump()
         payload['sequence'] = sequence
@@ -267,8 +268,42 @@ async def attacker_action(action: AttackerAction):
     return {"status": "logged"}
 
 
-@router.get("/topology/current")
-async def get_topology_current():
+@router.post("/admin/reset")
+async def reset_state():
+    """Hard reset all in-memory state and Redis — call before a fresh demo run."""
+    global current_topology, attacker_profiles, attacker_actions, _event_sequence, _deception_activated, _topology_spawning
+    async with state_lock:
+        current_topology = TopologySnapshot(nodes=[], edges=[], generation=0)
+        attacker_profiles.clear()
+        attacker_actions.clear()
+        _event_sequence = 0
+        _deception_activated = False
+        _topology_spawning = False
+
+    # Clear Redis
+    try:
+        conn = await redis_client._get_conn()
+        keys = await conn.keys("session:*")
+        keys += await conn.keys("breadcrumb:*")
+        if keys:
+            await conn.delete(*keys)
+        await conn.delete("system:topology")
+    except Exception as e:
+        log.warning("[reset] Redis clear failed: %s", e)
+
+    # Tear down all honeypot containers
+    from backend.deception.container_manager import teardown_all
+    await teardown_all()
+
+    if sio:
+        await sio.emit(EVENTS['TOPOLOGY_UPDATE'], {"nodes": [], "edges": [], "generation": 0})
+        await sio.emit(EVENTS['ALERT'], {"message": "System reset — ready for fresh demo", "severity": "info"})
+
+    log.info("[reset] Full state reset complete")
+    return {"status": "reset", "message": "All state cleared. Ready for fresh demo."}
+
+
+
     return current_topology
 
 @router.get("/attacker/profile/{attacker_ip}")
@@ -442,6 +477,24 @@ async def get_dns_queries():
     return honeypot.get_query_log() if honeypot else []
 
 
+@router.post("/breadcrumbs/report")
+async def breadcrumb_heartbeat(request: Request):
+    data = await request.json()
+    agent_host = data.get("agent_host", "unknown")
+    planted_paths = data.get("planted_paths", [])
+    timestamp = data.get("timestamp", time.time())
+
+    try:
+        await redis_client.save_breadcrumb_heartbeat(agent_host, planted_paths, timestamp)
+        count = await redis_client.get_active_breadcrumb_count()
+        if sio:
+            await sio.emit(EVENTS['BREADCRUMB_UPDATE'], {"active_count": count})
+    except Exception as e:
+        log.warning("[breadcrumb] Heartbeat storage failed: %s", e)
+
+    return {"status": "ok", "agent_host": agent_host}
+
+
 async def _do_mutate():
     """Background task: use Phase 3 mutator to reshuffle topology and broadcast."""
     global current_topology, _event_sequence
@@ -525,6 +578,7 @@ async def download_decoy_doc(token_id: str, filename: str, request: Request):
         if len(attacker_actions[attacker_ip]) > _ACTION_LIST_MAX:
             attacker_actions[attacker_ip] = attacker_actions[attacker_ip][-_ACTION_LIST_TRIM:]
         _event_sequence += 1
+        sequence = _event_sequence
     asyncio.create_task(neo4j_client.log_action(action))
     asyncio.create_task(redis_client.save_action(attacker_ip, action))
 
@@ -532,7 +586,7 @@ async def download_decoy_doc(token_id: str, filename: str, request: Request):
         try:
             await sio.emit(EVENTS['ATTACKER_ACTION'], {
                 **action.model_dump(),
-                "sequence": _event_sequence,
+                "sequence": sequence,
             })
         except Exception as exc:
             log.warning("[docs] Socket.IO emit failed: %s", exc)

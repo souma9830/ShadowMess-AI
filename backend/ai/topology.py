@@ -130,18 +130,18 @@ async def mutate_topology(current: TopologySnapshot) -> TopologySnapshot:
     for i in range(num_new):
         node_type = random.choices(node_types, weights=weights, k=1)[0]
         template = NODE_TEMPLATES[node_type]
-        
+
         ports = list(template['ports'])
         if random.random() < 0.3:
             ports.append(random.choice([22, 8080, 9000, 10050]))
-            
+
         banner_variation = template['banner']
         if random.random() < 0.25:
             if 'Apache' in banner_variation:
                 banner_variation += ' (Ubuntu)'
-                
+
         new_nodes.append(NetworkNode(
-            node_id=f'node_{generation}_{i}',
+            node_id=f'node_{generation}_new{i}',  # 'new' prefix avoids collision with retained node IDs
             ip=available_ips[i],
             node_type=node_type,
             ports=sorted(set(ports)),

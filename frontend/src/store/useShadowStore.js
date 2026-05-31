@@ -25,6 +25,7 @@ export const useShadowStore = create((set, get) => ({
   threatScores: {},
   dnsQueries: [],
   activeBreadcrumbs: 0,
+  attackerInterests: { credentials: 0, ad_admin: 0, cloud: 0, finance: 0, lateral: 0 },
 
   activateDeception: (attackerIp) => set({ isDeceptionActive: true, attackerIp }),
   
@@ -106,6 +107,27 @@ export const useShadowStore = create((set, get) => ({
   })),
   
   setBreadcrumbs: (count) => set({ activeBreadcrumbs: count }),
+
+  trackInterest: (actionType, detail) => set((state) => {
+    const d = (detail || '').toLowerCase();
+    const interests = { ...state.attackerInterests };
+    if (actionType === 'credential_theft' || d.includes('credential') || d.includes('aws_key') || d.includes('env_file') || d.includes('ssh_key')) {
+      interests.credentials += 1;
+    }
+    if (actionType === 'canary_trigger' || d.includes('ldap') || d.includes('domain admin') || d.includes('ad') || d.includes('active directory')) {
+      interests.ad_admin += 1;
+    }
+    if (d.includes('cloud') || d.includes('aws') || d.includes('azure') || d.includes('gcp') || d.includes('s3')) {
+      interests.cloud += 1;
+    }
+    if (d.includes('payroll') || d.includes('finance') || d.includes('salary') || d.includes('invoice') || d.includes('q3') || d.includes('q4')) {
+      interests.finance += 1;
+    }
+    if (actionType === 'lateral_move' || d.includes('lateral') || d.includes('pivot')) {
+      interests.lateral += 1;
+    }
+    return { attackerInterests: interests };
+  }),
   
   reset: () => set({
     isDeceptionActive: false, attackerIp: null, topologyGeneration: 0,
@@ -113,6 +135,7 @@ export const useShadowStore = create((set, get) => ({
     attackerProfiles: {}, focusedAttackerIp: null, activeSessions: [], nodeHits: {},
     mitreTechniques: {}, sessionStats: { dwellTimeSeconds: 0, nodesExplored: 0, loginAttempts: 0, commandsRun: 0 },
     isMutating: false, canaryTokens: [], stolenCredentials: [],
-    threatScores: {}, dnsQueries: [], activeBreadcrumbs: 0
+    threatScores: {}, dnsQueries: [], activeBreadcrumbs: 0,
+    attackerInterests: { credentials: 0, ad_admin: 0, cloud: 0, finance: 0, lateral: 0 }
   })
 }));

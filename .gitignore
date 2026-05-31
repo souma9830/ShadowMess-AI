@@ -43,3 +43,10 @@ enterprise-attack.json
 *.swp
 *.swo
 .DS_Store
+
+# Runtime artifacts
+*.npy
+pytest.ini
+
+# Ignore attacker script
+scripts/remote_attacker.py

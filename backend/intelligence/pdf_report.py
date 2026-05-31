@@ -24,6 +24,12 @@ class ShadowMeshReport(FPDF if _FPDF_AVAILABLE else object):
         self.set_text_color(128, 128, 128)
         self.cell(0, 10, f'Page {self.page_no()}', align='C')
 
+def sanitize(text: str) -> str:
+    if not isinstance(text, str):
+        return str(text)
+    return text.replace('—', '-').replace('“', '"').replace('”', '"').replace('’', "'")
+
+
 def generate_pdf_report(attacker_ip: str, profile: Any, actions: List[AttackerAction], threat_score: dict) -> bytes:
     if not _FPDF_AVAILABLE:
         return b"PDF generation unavailable - install fpdf2: pip install fpdf2"
@@ -33,18 +39,18 @@ def generate_pdf_report(attacker_ip: str, profile: Any, actions: List[AttackerAc
 
     # Handle profile type
     if isinstance(profile, dict):
-        skill = profile.get("skill_level", "Unknown")
-        objective = profile.get("objective", "Unknown")
-        tools = profile.get("tools_detected", [])
-        summary = profile.get("summary", "No summary available.")
-        apt = profile.get("apt_resemblance", "Unknown")
+        skill = sanitize(profile.get("skill_level", "Unknown"))
+        objective = sanitize(profile.get("objective", "Unknown"))
+        tools = [sanitize(t) for t in profile.get("tools_detected", [])]
+        summary = sanitize(profile.get("summary", "No summary available."))
+        apt = sanitize(profile.get("apt_resemblance", "Unknown"))
         confidence = profile.get("confidence", 0.0)
     else:
-        skill = getattr(profile, "skill_level", "Unknown")
-        objective = getattr(profile, "objective", "Unknown")
-        tools = getattr(profile, "tools_detected", [])
-        summary = getattr(profile, "summary", "No summary available.")
-        apt = getattr(profile, "apt_resemblance", "Unknown")
+        skill = sanitize(getattr(profile, "skill_level", "Unknown"))
+        objective = sanitize(getattr(profile, "objective", "Unknown"))
+        tools = [sanitize(t) for t in getattr(profile, "tools_detected", [])]
+        summary = sanitize(getattr(profile, "summary", "No summary available."))
+        apt = sanitize(getattr(profile, "apt_resemblance", "Unknown"))
         confidence = getattr(profile, "confidence", 0.0)
 
     score_val = threat_score.get('threat_score', 0) if threat_score else 0
@@ -110,7 +116,7 @@ def generate_pdf_report(attacker_ip: str, profile: Any, actions: List[AttackerAc
         pdf.set_font('helvetica', 'B', 9)
         pdf.cell(40, 6, ts, new_x='RIGHT')
         pdf.set_font('helvetica', '', 9)
-        pdf.multi_cell(0, 6, f"{tech} {tid} - {action.detail}", new_x='LMARGIN', new_y='NEXT')
+        pdf.multi_cell(0, 6, sanitize(f"{tech} {tid} - {action.detail}"), new_x='LMARGIN', new_y='NEXT')
         pdf.ln(1)
 
     return bytes(pdf.output())

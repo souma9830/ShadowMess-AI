@@ -3,9 +3,9 @@ import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "docker", "fake-auth"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "docker"))
 
-from docker.fake_auth_test_helper import app
+from fake_auth_test_helper import app
 
 
 @pytest.fixture

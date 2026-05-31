@@ -234,8 +234,9 @@ class RLTopologyOptimizer:
         reward = compute_reward(actions, session_duration)
         state = session["state"]
         action = session["action"]
-
-        self.update(state, action, reward, state)
+        # Terminal state: no next observation available, use state itself as next_state
+        # so the Q-update reduces to: Q(s,a) += lr * (reward - Q(s,a))
+        self.update(state, action, reward, state)  # next_state=state is correct for terminal episodes
 
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
