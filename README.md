@@ -1,4 +1,4 @@
-# ShadowMesh
+# ShadowMesh AI
 
 ## The Significance & Solution
 
