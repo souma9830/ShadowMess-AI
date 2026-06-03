@@ -29,6 +29,8 @@ wheels/
 
 # Frontend / JS
 node_modules/
+frontend/dist/
+frontend/.vite/
 
 # Logs & scratch
 pip-log.txt
@@ -43,10 +45,33 @@ enterprise-attack.json
 *.swp
 *.swo
 .DS_Store
+Thumbs.db
 
 # Runtime artifacts
 *.npy
 pytest.ini
 
-# Ignore attacker script
+# Claude Code internal
+.claude/
+.pytest_cache/
+backend/.pytest_cache/
+
+# Kaggle artifacts — large binary/data files, uploaded separately to Kaggle
+kaggle_artifacts/
+
+# Attack scripts — not part of the public codebase
 scripts/remote_attacker.py
+scripts/kali_attack.sh
+
+# Stale internal task/planning docs — not useful to contributors
+docs/TASK_4_1.md
+docs/TASK_4_2A.md
+docs/TASK_4_2B.md
+docs/TASK_4_2C.md
+docs/TASK_4_2D.md
+docs/TASK_4_3.md
+docs/TASK_4_4.md
+docs/TASK_4_5.md
+docs/TASK_4_6.md
+docs/TASK_9_5.md
+IMPLEMENTATION.md
