@@ -38,6 +38,8 @@ pip-delete-this-directory.txt
 scratch/
 brain/
 enterprise-attack.json
+.mypaper_extract.txt
+.template_extract.txt
 
 # IDEs / OS
 .vscode/
@@ -66,6 +68,29 @@ kaggle_artifacts/
 # Attack scripts — not part of the public codebase
 scripts/remote_attacker.py
 scripts/kali_attack.sh
+
+# Paper and manuscript drafts
+Paper/
+
+# Local evaluation and benchmark scripts
+scripts/ablation_mutation.py
+scripts/benchmark_detectors.py
+scripts/benchmark_fully_real.py
+scripts/benchmark_real.py
+scripts/build_docx.py
+scripts/capture_benign.py
+scripts/capture_bulk_attacks.py
+scripts/compare_honeypots.py
+scripts/compare_opencanary.py
+scripts/compare_rl_policies.py
+scripts/extract_only.py
+scripts/find_dashes.py
+scripts/make_figures.py
+scripts/measure_footprint.py
+scripts/measure_timing.py
+scripts/opencanary.conf
+scripts/validate_profiler.py
+tests/test_anomaly_detector.py
 
 # Stale internal task/planning docs — not useful to contributors
 docs/TASK_4_1.md

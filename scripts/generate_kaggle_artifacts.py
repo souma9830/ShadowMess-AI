@@ -7,9 +7,10 @@ Generates all three Kaggle upload artifacts for ShadowMesh:
        7-feature labeled dataset (benign + 8 attack phases)
        Compatible with NSL-KDD style benchmarking.
 
-  2. isolation_forest_model.pkl
-       Trained IsolationForest (contamination=0.05, 100 estimators, seed=42)
-       trained on the full 5000-sample benign baseline.
+  2. oneclass_svm_model.pkl
+       Production One-Class SVM detector (+ feature scaler), trained on the
+       canonical 2,000-sample benign baseline via the live AnomalyDetector.
+       Evaluated out-of-sample on the dataset below.
 
   3. q_table.npy  +  q_table_readable.csv
        Q-learning topology optimizer after 50,000 simulated RL episodes.
@@ -61,19 +62,13 @@ FEATURE_NAMES = [
 rng = np.random.default_rng(42)
 
 # ── BENIGN (label=0) ───────────────────────────────────────────────────────
+# NOTE: this is the EVALUATION dataset's benign portion (5,000 rows), kept
+# separate from the detector's 2,000-sample TRAINING set. Uses the same
+# production benign generator so the feature distribution matches the live system.
 N_BENIGN = 5000
 
-benign = np.column_stack([
-    rng.uniform(200, 5000, N_BENIGN),           # timing_delta_ms  — human pace
-    rng.uniform(0.1, 0.4,  N_BENIGN),           # port_entropy      — low, known services
-    rng.integers(1, 4,     N_BENIGN).astype(float),  # unique_ports_5s
-    rng.integers(0, 3,     N_BENIGN).astype(float),  # login_rate_60s
-    rng.integers(1, 5,     N_BENIGN).astype(float),  # command_diversity
-    rng.integers(1, 3,     N_BENIGN).astype(float),  # lateral_spread
-    rng.choice([2, 2, 3, 3, 0, 1, 4], N_BENIGN).astype(float),  # action_type_encoded
-])
-benign += rng.normal(0, 0.05, benign.shape)
-benign = np.clip(benign, 0, None)
+from backend.ai.anomaly_detector import generate_benign_training_data
+benign = generate_benign_training_data(N_BENIGN).astype(float)
 
 benign_df = pd.DataFrame(benign, columns=FEATURE_NAMES)
 benign_df['label'] = 0
@@ -174,32 +169,33 @@ print(f"    [OK] {len(full_df):,} rows — {benign_count:,} benign / {attack_cou
 print(f"    [OK] Saved: {dataset_path}")
 
 # ---------------------------------------------------------------------------
-# 2. MODEL — Trained IsolationForest
+# 2. MODEL — the production One-Class SVM detector
 # ---------------------------------------------------------------------------
-print("\n[2/3] Training IsolationForest model...")
+# CANONICAL TRAINING STORY: the detector is trained on the production benign
+# baseline (TRAIN_SAMPLES, default 2,000) via the SAME AnomalyDetector the live
+# backend uses — NOT on the 5,000 benign rows of the evaluation dataset. The
+# 5,000/4,000 split in this file is the *evaluation* dataset, kept separate from
+# the training set so reported metrics are out-of-sample.
+print("\n[2/3] Training production One-Class SVM detector...")
 
-from sklearn.ensemble import IsolationForest
+from backend.ai.anomaly_detector import AnomalyDetector, TRAIN_SAMPLES, FEATURE_NAMES as PROD_FEATURES
 
-X_train = full_df[full_df['label'] == 0][FEATURE_NAMES].values.astype(np.float32)
+detector = AnomalyDetector()
+detector.train()  # fits scaler + OC-SVM on TRAIN_SAMPLES synthetic benign samples
+print(f"    [OK] Trained on {TRAIN_SAMPLES} production benign samples (One-Class SVM)")
 
-model = IsolationForest(
-    n_estimators=100,
-    contamination=0.05,
-    random_state=42,
-    n_jobs=-1,
-)
-model.fit(X_train)
-
-# Quick validation
+# Evaluate on the released dataset (out-of-sample w.r.t. the training set)
+X_eval_benign = full_df[full_df['label'] == 0][FEATURE_NAMES].values.astype(np.float32)
 X_attack = full_df[full_df['label'] == 1][FEATURE_NAMES].values.astype(np.float32)
-preds_benign = model.predict(X_train)
-preds_attack = model.predict(X_attack)
 
-benign_correct = (preds_benign == 1).mean()
-attack_detected = (preds_attack == -1).mean()
+def _predict(X):
+    return detector.model.predict(detector.scaler.transform(X))
 
-model_path = OUTPUT_DIR / "isolation_forest_model.pkl"
-joblib.dump(model, model_path)
+benign_correct = (_predict(X_eval_benign) == 1).mean()
+attack_detected = (_predict(X_attack) == -1).mean()
+
+model_path = OUTPUT_DIR / "oneclass_svm_model.pkl"
+joblib.dump({'model': detector.model, 'scaler': detector.scaler}, model_path)
 
 print(f"    [OK] Benign correctly classified : {benign_correct:.1%}")
 print(f"    [OK] Attack actions detected     : {attack_detected:.1%}")
@@ -350,7 +346,7 @@ print("\n" + "=" * 60)
 print("  All artifacts saved to: kaggle_artifacts/")
 print("=" * 60)
 print(f"  shadowmesh_behavioral_dataset.csv  — {len(full_df):,} rows, 7 features + label")
-print(f"  isolation_forest_model.pkl         — benign accuracy {benign_correct:.1%}, attack recall {attack_detected:.1%}")
+print(f"  oneclass_svm_model.pkl             — benign accuracy {benign_correct:.1%}, attack recall {attack_detected:.1%}")
 print(f"  q_table.npy                        — {TOTAL_STATES} states × {NUM_ACTIONS} actions")
 print(f"  q_table_readable.csv               — {TOTAL_STATES} rows, human-readable topology preferences")
 print("\n  Upload to Kaggle:")

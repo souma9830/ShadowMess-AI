@@ -514,7 +514,9 @@ def extract_features_from_backend(base):
 
 
 def generate_benign_baseline():
-    """Generate benign baseline using the real generator from the codebase."""
+    """Generate the EVALUATION benign baseline (3,000 rows) using the production
+    featurizer's generator. This is evaluation data paired with the 45 real attack
+    vectors — distinct from the detector's 2,000-sample training set."""
     section("Generating benign baseline (real featurizer logic)")
     from backend.ai.anomaly_detector import generate_benign_training_data, FEATURE_NAMES
 
@@ -523,17 +525,17 @@ def generate_benign_baseline():
     df['label'] = 0
     df['attack_phase'] = 'benign'
     df['raw_action_type'] = 'normal_traffic'
-    log(f"    [OK] {len(df)} benign samples generated")
+    log(f"    [OK] {len(df)} benign EVALUATION samples generated (training set is 2,000, separate)")
     return df
 
 
 # ── TRAIN MODELS ON REAL DATA ──────────────────────────────────────────────
 
 def train_and_save(df):
-    section("Training IsolationForest on real captured data")
+    section("Training production One-Class SVM and evaluating on real captured data")
 
     import joblib
-    from sklearn.ensemble import IsolationForest
+    from backend.ai.anomaly_detector import AnomalyDetector, TRAIN_SAMPLES
 
     FEATURE_NAMES = [
         'timing_delta_ms', 'port_entropy', 'unique_ports_5s',
@@ -544,20 +546,25 @@ def train_and_save(df):
     X_benign = df[df['label'] == 0][FEATURE_NAMES].values.astype(np.float32)
     X_attack = df[df['label'] == 1][FEATURE_NAMES].values.astype(np.float32)
 
-    model = IsolationForest(n_estimators=100, contamination=0.05,
-                             random_state=42, n_jobs=-1)
-    model.fit(X_benign)
+    # Train the SAME production detector on the canonical 2,000-sample baseline,
+    # then evaluate on this real-attack dataset (out-of-sample).
+    detector = AnomalyDetector()
+    detector.train()
 
-    benign_acc  = (model.predict(X_benign) == 1).mean()
-    attack_rec  = (model.predict(X_attack) == -1).mean() if len(X_attack) > 0 else 0
+    def _pred(X):
+        return detector.model.predict(detector.scaler.transform(X))
 
-    path = OUTPUT_DIR / "isolation_forest_model.pkl"
-    joblib.dump(model, path)
+    benign_acc  = (_pred(X_benign) == 1).mean()
+    attack_rec  = (_pred(X_attack) == -1).mean() if len(X_attack) > 0 else 0
 
+    path = OUTPUT_DIR / "oneclass_svm_model.pkl"
+    joblib.dump({'model': detector.model, 'scaler': detector.scaler}, path)
+
+    log(f"    Trained on    : {TRAIN_SAMPLES} benign samples (production canonical)")
     log(f"    Benign accuracy : {benign_acc:.1%}")
     log(f"    Attack recall   : {attack_rec:.1%}")
     log(f"    [OK] Saved: {path}")
-    return model
+    return detector
 
 
 # ── Q-TABLE TRAINING ───────────────────────────────────────────────────────

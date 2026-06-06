@@ -269,6 +269,11 @@ def _handle_connection(client_sock: socket.socket, client_addr: tuple, host_key:
     transport: paramiko.Transport | None = None
     try:
         transport = paramiko.Transport(client_sock)
+        # Spoof a realistic OpenSSH identification string instead of the default
+        # "paramiko_x.y", which trivially fingerprints the honeypot as a Python
+        # process. SSH_BANNER is configurable so deployments can match their fleet.
+        transport.local_version = os.environ.get(
+            "SSH_BANNER", "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6")
         transport.add_server_key(host_key)
 
         server_interface = _HoneypotServerInterface(attacker_ip)

@@ -410,10 +410,14 @@ async def test_lure():
     topo5 = await generate_topology(0)
     topo5.nodes = [n for n in topo5.nodes if n.node_type != 'api_gateway']
     sio5 = MockSIO()
-    lure_n = await lg_mod.maybe_spawn_lure(p2, topo5, sio5, 4)
-    is_uuid = len(lure_n.node_id) >= 15  # should be e.g. lure_4_abcdef12
-    record("T3.5.6 lure node_id uses UUID for high entropy (collision-free)",
-           PASS if is_uuid else FAIL, f"node_id={lure_n.node_id if lure_n else None}")
+    if lure_n:
+        is_uuid = len(lure_n.node_id) >= 15  # should be e.g. lure_4_abcdef12
+        record("T3.5.6 lure node_id uses UUID for high entropy (collision-free)",
+               PASS if is_uuid else FAIL, f"node_id={lure_n.node_id}")
+    else:
+        record("T3.5.6 lure node_id uses UUID for high entropy (collision-free)",
+               FAIL, "lure_n is None — spawn_container unavailable (no Docker?)")
+
 
 asyncio.run(test_lure())
 

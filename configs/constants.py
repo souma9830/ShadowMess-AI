@@ -56,6 +56,29 @@ ACTION_LIST_MAX: int = 1000
 ACTION_LIST_TRIM: int = 500
 
 # ---------------------------------------------------------------------------
+# Anomaly detector (backend/ai/anomaly_detector.py)
+# ---------------------------------------------------------------------------
+
+# Number of synthetic benign samples the One-Class SVM is trained on at startup.
+# This is the CANONICAL training-set size. Note it is distinct from the
+# *evaluation* datasets shipped in kaggle_artifacts/ (5,000-benign behavioral
+# dataset and 3,000-benign real-attack dataset) — those are held-out test data,
+# not training data.
+ANOMALY_TRAIN_SAMPLES: int = 2000
+
+# One-Class SVM nu — upper bound on the fraction of training points treated as
+# outliers / lower bound on support-vector fraction. ~0.05 ≈ expect 5% noise.
+ANOMALY_NU: float = 0.05
+
+# threat_score (0..1) at/above which an action is escalated to a CRITICAL alert.
+# Separate from the model's own inlier/outlier boundary so SOC teams can tune
+# alert volume without retraining.
+ANOMALY_ALERT_THRESHOLD: float = 0.75
+
+# Number of top contributing features to include in a score explanation.
+ANOMALY_EXPLAIN_TOP_K: int = 3
+
+# ---------------------------------------------------------------------------
 # Redis TTLs (backend/database/redis_client.py)
 # ---------------------------------------------------------------------------
 

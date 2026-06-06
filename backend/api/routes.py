@@ -31,6 +31,12 @@ _MAX_TRACKED_IPS = 1000
 # Groq profiling rate-limit: run every N actions per IP
 _PROFILING_EVERY_N_ACTIONS = 1
 
+# threat_score at/above which an anomalous action escalates to a CRITICAL alert.
+try:
+    from configs.constants import ANOMALY_ALERT_THRESHOLD
+except Exception:  # pragma: no cover
+    ANOMALY_ALERT_THRESHOLD = 0.75
+
 router = APIRouter()
 
 # Global state
@@ -198,11 +204,21 @@ async def attacker_action(action: AttackerAction):
             'attacker_ip': action.attacker_ip,
             'threat_score': score_result['threat_score'],
             'is_anomalous': score_result['is_anomalous'],
+            'explanation': score_result.get('explanation', []),
             'action_id': str(action.timestamp)
         })
-        if score_result['is_anomalous'] and score_result['threat_score'] > 0.75:
+        if score_result['is_anomalous'] and score_result['threat_score'] > ANOMALY_ALERT_THRESHOLD:
+            # Surface the top contributing features so analysts see WHY it fired.
+            why = ', '.join(
+                f"{e['feature']} {e['deviation_sigma']:+.1f}σ"
+                for e in score_result.get('explanation', [])
+            )
             await sio.emit(EVENTS['ALERT'], {
-                'message': f'High-anomaly action detected (score: {score_result["threat_score"]:.2f}) — possible APT behavior',
+                'message': (
+                    f'High-anomaly action detected (score: {score_result["threat_score"]:.2f}) '
+                    f'— possible APT behavior'
+                    + (f' [{why}]' if why else '')
+                ),
                 'severity': 'critical'
             })
 

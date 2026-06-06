@@ -11,7 +11,7 @@ As the attacker pivots and escalates, ShadowMesh profiles their behavior using L
 ## Tech Stack
 
 - **Backend**: Python 3.13, FastAPI, Socket.IO (ASGI), Scapy (packet sniffing), Asyncio
-- **AI & Analytics**: Groq LLM (attacker profiling), NetworkX + Barabási–Albert graph model (topology), scikit-learn IsolationForest (anomaly detection), Q-learning RL optimizer (topology selection)
+- **AI & Analytics**: Groq LLM (attacker profiling), NetworkX + Barabási–Albert graph model (topology), scikit-learn One-Class SVM (anomaly detection), Q-learning RL optimizer (topology selection)
 - **Deception Layer**: 10 fake Docker honeypots (HTTP, DB, Auth/AD, SMB, API, RDP, MQTT, Redis, Elasticsearch, SSH), canary tokens, fake credentials, synthetic personas, decoy documents
 - **Intelligence**: MITRE ATT&CK tagging, STIX 2.1 export, PDF threat reports, Neo4j attack graph, SIEM integrations (Splunk, Elastic, Sentinel, CEF syslog)
 - **Database & State**: Neo4j (attack graph), Redis (session persistence & hydration)
@@ -27,7 +27,7 @@ sequenceDiagram
     participant A as Attacker
     participant S as Scapy / DNS Honeypot
     participant B as FastAPI Backend
-    participant AI as AI Engine (Groq / RL / IsolationForest)
+    participant AI as AI Engine (Groq / RL / One-Class SVM)
     participant D as Deception Fabric (Docker)
     participant DB as Neo4j & Redis
     participant F as React Dashboard
@@ -67,7 +67,7 @@ sequenceDiagram
 **AI Intelligence**
 - Groq LLM attacker profiling (skill level, objective, APT resemblance, tools detected)
 - Local heuristic fallback when Groq API unavailable
-- IsolationForest ML anomaly scoring on every action
+- One-Class SVM ML anomaly scoring on every action
 - Q-learning RL optimizer selects topology configuration to maximize attacker engagement
 - Real-time MITRE ATT&CK technique tagging
 
@@ -133,3 +133,22 @@ Scapy runs in a dedicated daemon thread, scheduling coroutines onto the asyncio 
 - LLM responses size-capped and sanitized before `json.loads()`
 - Node IDs validated against `[a-zA-Z0-9_-]` regex before Docker operations
 - X-Forwarded-For header parsed and validated, not trusted blindly
+
+---
+
+## License
+
+This project is released under the [MIT License](LICENSE).
+
+## Ethics & Responsible Use
+
+ShadowMesh is a **defensive** security research tool. All development and testing
+were performed in an isolated lab on the author's own systems (the `172.20.0.0/24`
+deception subnet); no third-party systems, networks, or real users were involved,
+and no real credentials were exposed. The honeypots emit only synthetic data.
+
+The breadcrumb agent (`agents/breadcrumb_agent.py`) plants **fake** credentials and
+host entries on machines to lure attackers into the deception fabric. It is intended
+**only** for deployment by an operator on systems they own or are explicitly
+authorized to administer. Do not deploy it on systems you do not control. Users are
+responsible for complying with all applicable laws and policies.
